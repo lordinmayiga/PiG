@@ -101,7 +101,16 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
             </View>
 
             {file.kind === 'text' ? (
-              <ScrollView style={{ maxHeight: 420, margin: spacing.md, backgroundColor: colors.neutral[100], borderRadius: radius.chip }}>
+              <ScrollView
+                style={{
+                  maxHeight: 420,
+                  margin: spacing.md,
+                  backgroundColor: colors.canvas,
+                  borderRadius: radius.chip,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: colors.border,
+                }}
+              >
                 <ScrollView horizontal>
                   <Text
                     selectable

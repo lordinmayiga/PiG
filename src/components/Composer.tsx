@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import { Mic, Paperclip, Send, X } from 'lucide-react-native';
+import { Mic, Plus, Send, X } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
+import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
+import { sendRouteInput, type RouteInputAction } from '../network/routeInput';
 import type { FileAttachment } from '../types';
 
 export interface ComposerAttachment extends FileAttachment {
@@ -13,7 +16,23 @@ export interface ComposerAttachment extends FileAttachment {
 }
 
 interface ComposerProps {
+  /** The session this composer is submitting into — threaded through to
+   * `sendRouteInput`'s `route_input` envelope so the backend/mock knows
+   * which session's turn this is. Optional only for call sites that don't
+   * have a real session yet (none currently); omitting it sends an empty
+   * sessionId, which the backend would reject as malformed once it's real. */
+  sessionId?: string;
+  /** Called with the cleaned-up prompt text once `/route-input` classifies a submission as an agent prompt. */
   onSend: (text: string, attachments: ComposerAttachment[]) => void;
+  /**
+   * Called when `/route-input` classifies a submission as an environment
+   * command (kill/new/switch session, etc), after the user has confirmed it
+   * if `requiresConfirm` was set. Optional — screens that don't yet handle
+   * routed actions (e.g. the current fixture-driven demo) can omit it, in
+   * which case Composer falls back to `onSend` so the submission still shows
+   * up somewhere instead of silently vanishing.
+   */
+  onAction?: (action: RouteInputAction) => void;
 }
 
 function kindForMimeType(mimeType: string): FileAttachment['kind'] {
@@ -26,12 +45,24 @@ let nextLocalId = 1;
 
 /**
  * Composer per SPEC.md §3/§6: purely local state until send — no network
- * calls while typing. Attach (photo/camera vs. file), a stub mic button
- * (dictation wiring is out of scope here), and a send button gated on
- * having text or at least one attachment.
+ * calls while typing. Attach (photo/camera vs. file) and a stub mic button
+ * (dictation wiring is out of scope here) share the trailing slot with Send:
+ * mic shows while the composer is empty, Send takes its place once there's
+ * text or an attachment — matches the reference composer design, and means
+ * there's never a dead, permanently-disabled Send button on screen.
+ *
+ * Floating rounded card, not a flush full-width bar — see pig-layout-spacing
+ * (radius.pill is the named "composer pill" token) and pig-color-system
+ * (colors.card as the nested surface on colors.canvas, in both modes).
+ *
+ * Keyboard handling per pig-keyboard-handling: the bottom safe-area inset
+ * collapses to 0 while the keyboard is visible instead of stacking on top of
+ * the keyboard's own height (would otherwise leave a dead gap above it).
  */
-export function Composer({ onSend }: ComposerProps) {
+export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
+  const insets = useSafeAreaInsets();
+  const keyboardVisible = useKeyboardVisible();
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
 
@@ -89,48 +120,107 @@ export function Composer({ onSend }: ComposerProps) {
     ]);
   };
 
+  const runAction = (action: RouteInputAction, submittedText: string, submittedAttachments: ComposerAttachment[]) => {
+    if (onAction) {
+      onAction(action);
+    } else {
+      // No screen-level handler wired up yet (Phase 6C's action_confirm
+      // send isn't in place) — fall back to the plain prompt path so the
+      // submission still surfaces instead of disappearing silently.
+      onSend(submittedText, submittedAttachments);
+    }
+  };
+
   const handleSend = () => {
     if (!canSend) return;
-    onSend(text.trim(), attachments);
+    const submittedText = text.trim();
+    const submittedAttachments = attachments;
+    // Clear the composer immediately — routing happens against a snapshot
+    // of what was submitted, per SPEC §3/§6 (no network calls while typing,
+    // only on submit).
     setText('');
     setAttachments([]);
+
+    sendRouteInput(submittedText, submittedAttachments, sessionId ?? '')
+      .then((result) => {
+        if (result.kind === 'prompt') {
+          onSend(result.cleanedText, submittedAttachments);
+          return;
+        }
+
+        // Environment command. Destructive actions always require a confirm
+        // step before executing — SPEC §6.
+        if (result.requiresConfirm) {
+          Alert.alert(result.action.summary || 'Confirm action', 'This action cannot be undone.', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Confirm',
+              style: 'destructive',
+              onPress: () => runAction(result.action, submittedText, submittedAttachments),
+            },
+          ]);
+        } else {
+          runAction(result.action, submittedText, submittedAttachments);
+        }
+      })
+      .catch(() => {
+        // Mock call shouldn't reject, but don't let a submission vanish if
+        // classification fails once this is a real network call.
+        onSend(submittedText, submittedAttachments);
+      });
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.card, borderTopColor: colors.border, padding: spacing.sm }]}>
-      {attachments.length > 0 ? (
-        <View style={[styles.attachmentRow, { gap: spacing.xs, marginBottom: spacing.xs }]}>
-          {attachments.map((attachment) => (
-            <View
-              key={attachment.id}
-              style={[styles.pendingChip, { backgroundColor: colors.neutral[100], borderRadius: radius.chip, paddingHorizontal: spacing.xs }]}
-            >
-              <Text style={[typeScale.caption, { color: colors.ink, maxWidth: 120 }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
-                {attachment.name}
-              </Text>
-              <Pressable
-                onPress={() => removeAttachment(attachment.id)}
-                accessibilityRole="button"
-                accessibilityLabel={`Remove ${attachment.name}`}
-                hitSlop={8}
-                style={{ marginLeft: spacing.xxs }}
+    <View
+      style={[
+        styles.outer,
+        {
+          backgroundColor: colors.canvas,
+          paddingHorizontal: spacing.sm,
+          paddingTop: spacing.xs,
+          // Collapse the safe-area inset while the keyboard is up instead of
+          // stacking it on top of the keyboard's own height.
+          paddingBottom: spacing.xs + (keyboardVisible ? 0 : insets.bottom),
+        },
+      ]}
+    >
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border, borderRadius: radius.pill, padding: spacing.xs },
+        ]}
+      >
+        {attachments.length > 0 ? (
+          <View style={[styles.attachmentRow, { gap: spacing.xs, paddingHorizontal: spacing.xs, marginBottom: spacing.xxs }]}>
+            {attachments.map((attachment) => (
+              <View
+                key={attachment.id}
+                style={[
+                  styles.pendingChip,
+                  {
+                    backgroundColor: colors.canvas,
+                    borderColor: colors.border,
+                    borderRadius: radius.chip,
+                    paddingHorizontal: spacing.xs,
+                  },
+                ]}
               >
-                <Icon icon={X} size={16} color={colors.inkSecondary} />
-              </Pressable>
-            </View>
-          ))}
-        </View>
-      ) : null}
-
-      <View style={styles.inputRow}>
-        <Pressable
-          onPress={handleAttachPress}
-          accessibilityRole="button"
-          accessibilityLabel="Attach a photo or file"
-          style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
-        >
-          <Icon icon={Paperclip} size={24} color={colors.inkSecondary} />
-        </Pressable>
+                <Text style={[typeScale.caption, { color: colors.ink, maxWidth: 120 }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
+                  {attachment.name}
+                </Text>
+                <Pressable
+                  onPress={() => removeAttachment(attachment.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove ${attachment.name}`}
+                  hitSlop={8}
+                  style={{ marginLeft: spacing.xxs }}
+                >
+                  <Icon icon={X} size={16} color={colors.inkSecondary} />
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
         <TextInput
           value={text}
@@ -141,45 +231,53 @@ export function Composer({ onSend }: ComposerProps) {
           style={[
             styles.input,
             typeScale.body,
-            { color: colors.ink, backgroundColor: colors.canvas, borderRadius: radius.pill, paddingHorizontal: spacing.sm },
+            { color: colors.ink, paddingHorizontal: spacing.xs },
           ]}
           maxFontSizeMultiplier={1.3}
         />
 
-        <Pressable
-          onPress={() => {}}
-          accessibilityRole="button"
-          accessibilityLabel="Dictate (not yet available)"
-          style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
-        >
-          <Icon icon={Mic} size={24} color={colors.inkSecondary} />
-        </Pressable>
+        <View style={[styles.actionRow, { paddingHorizontal: spacing.xxs }]}>
+          <Pressable
+            onPress={handleAttachPress}
+            accessibilityRole="button"
+            accessibilityLabel="Attach a photo or file"
+            style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
+          >
+            <Icon icon={Plus} size={20} color={colors.inkSecondary} />
+          </Pressable>
 
-        <Pressable
-          onPress={handleSend}
-          disabled={!canSend}
-          accessibilityRole="button"
-          accessibilityLabel="Send message"
-          style={[
-            styles.sendButton,
-            {
-              backgroundColor: canSend ? colors.accent : colors.neutral[200],
-              borderRadius: radius.pill,
-              minWidth: minTouchTarget,
-              minHeight: minTouchTarget,
-            },
-          ]}
-        >
-          <Icon icon={Send} size={20} color={canSend ? colors.onAccent : colors.inkPlaceholder} />
-        </Pressable>
+          {canSend ? (
+            <Pressable
+              onPress={handleSend}
+              accessibilityRole="button"
+              accessibilityLabel="Send message"
+              style={[
+                styles.sendButton,
+                { backgroundColor: colors.accent, borderRadius: radius.pill, minWidth: minTouchTarget, minHeight: minTouchTarget },
+              ]}
+            >
+              <Icon icon={Send} size={20} color={colors.onAccent} />
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => {}}
+              accessibilityRole="button"
+              accessibilityLabel="Dictate (not yet available)"
+              style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
+            >
+              <Icon icon={Mic} size={20} color={colors.inkSecondary} />
+            </Pressable>
+          )}
+        </View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    borderTopWidth: StyleSheet.hairlineWidth,
+  outer: {},
+  card: {
+    borderWidth: StyleSheet.hairlineWidth,
   },
   attachmentRow: {
     flexDirection: 'row',
@@ -189,19 +287,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 6,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  inputRow: {
+  input: {
+    maxHeight: 120,
+    minHeight: 36,
+    paddingVertical: 8,
+  },
+  actionRow: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   iconButton: {
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  input: {
-    flex: 1,
-    maxHeight: 120,
-    paddingVertical: 10,
   },
   sendButton: {
     alignItems: 'center',

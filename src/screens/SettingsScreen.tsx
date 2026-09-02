@@ -1,12 +1,25 @@
-import { useState } from 'react';
-import { KeyRound, Lock, Server } from 'lucide-react-native';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { KeyRound, Lock, LogOut, Moon, Server, Smartphone, Sun } from 'lucide-react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { SettingsRow } from '../components/SettingsRow';
-import { mockOpenRouterSettings, mockVpsConnection } from '../fixtures/settings';
-import { useTheme } from '../theme';
+import { mockOpenRouterSettings } from '../fixtures/settings';
+import { clearBridgeCredentials, loadBridgeCredentials, type BridgeCredentials } from '../secureStorage';
+import { Icon, useTheme, useThemeMode, type ThemePreference } from '../theme';
 import type { OpenRouterSettings } from '../types';
+
+/** Last 4 chars only, never the full token — matches the OpenRouter key's masking. */
+function maskToken(token: string): string {
+  const tail = token.slice(-4);
+  return tail ? `Paired · token ending in ${tail}` : 'Paired';
+}
+
+const APPEARANCE_OPTIONS: { value: ThemePreference; label: string; icon: typeof Sun }[] = [
+  { value: 'light', label: 'Light', icon: Sun },
+  { value: 'dark', label: 'Dark', icon: Moon },
+  { value: 'system', label: 'System', icon: Smartphone },
+];
 
 /**
  * Settings screen (SPEC.md §3.5, §7): VPS connection details, OpenRouter
@@ -23,10 +36,33 @@ import type { OpenRouterSettings } from '../types';
  */
 export default function SettingsScreen() {
   const { colors, spacing, radius, typeScale, screenMargin, maxFontScale, minTouchTarget } = useTheme();
+  const { preference, setPreference } = useThemeMode();
 
-  const vps = mockVpsConnection;
+  // null = still loading from secure storage; the safe fallback if the read
+  // fails is "not paired" (see secureStorage.ts), same as everywhere else.
+  const [credentials, setCredentials] = useState<BridgeCredentials | null>(null);
   const [openRouter, setOpenRouter] = useState<OpenRouterSettings>(mockOpenRouterSettings);
   const [requireUnlock, setRequireUnlock] = useState(false);
+
+  useEffect(() => {
+    loadBridgeCredentials().then(setCredentials);
+  }, []);
+
+  const handleDisconnect = () => {
+    Alert.alert('Disconnect from VPS?', "You'll need to pair again to reconnect.", [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Disconnect',
+        style: 'destructive',
+        onPress: async () => {
+          await clearBridgeCredentials();
+          setCredentials(null);
+          // RootNavigator listens for this change and swaps back to Setup
+          // on its own — no direct navigation call needed here.
+        },
+      },
+    ]);
+  };
 
   const [isEditingKey, setIsEditingKey] = useState(false);
   // Transient plaintext input only — cleared the moment Save mocks the
@@ -57,17 +93,17 @@ export default function SettingsScreen() {
     setIsEditingKey(false);
   };
 
-  const vpsStatus = vps.paired
-    ? `Paired · last connected ${formatRelativeTime(vps.lastConnectedAt)}`
-    : 'Not paired';
+  const vpsStatus = credentials ? maskToken(credentials.token) : 'Not paired';
 
   const keyValue = openRouter.hasKey && openRouter.keySuffix ? `Ending in ${openRouter.keySuffix}` : 'Not set';
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.canvas }]} edges={['top', 'bottom']}>
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: screenMargin, paddingBottom: spacing.xl }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <Text
           maxFontSizeMultiplier={maxFontScale}
@@ -76,9 +112,51 @@ export default function SettingsScreen() {
           Settings
         </Text>
 
+        <SectionHeader label="Appearance" />
+        <View
+          style={[
+            styles.segmented,
+            { backgroundColor: colors.canvas, borderColor: colors.border, borderRadius: radius.pill, padding: 3, gap: 3 },
+          ]}
+        >
+          {APPEARANCE_OPTIONS.map((option) => {
+            const isActive = preference === option.value;
+            return (
+              <Pressable
+                key={option.value}
+                onPress={() => setPreference(option.value)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isActive }}
+                accessibilityLabel={`${option.label} appearance`}
+                style={({ pressed }) => [
+                  styles.segment,
+                  {
+                    minHeight: minTouchTarget - 8,
+                    borderRadius: radius.pill,
+                    backgroundColor: isActive ? colors.accent : 'transparent',
+                    opacity: pressed && !isActive ? 0.6 : 1,
+                    gap: spacing.xxs,
+                  },
+                ]}
+              >
+                <Icon icon={option.icon} size={16} color={isActive ? colors.onAccent : colors.inkSecondary} />
+                <Text
+                  maxFontSizeMultiplier={maxFontScale}
+                  style={[typeScale.label, { color: isActive ? colors.onAccent : colors.inkSecondary }]}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
         <SectionHeader label="VPS connection" />
         <View style={[styles.card, { backgroundColor: colors.card, borderRadius: radius.card, borderColor: colors.border }]}>
-          <SettingsRow icon={Server} label={vps.host} value={vpsStatus} />
+          <SettingsRow icon={Server} label={credentials?.host ?? 'No VPS paired'} value={vpsStatus} />
+          {credentials ? (
+            <SettingsRow icon={LogOut} label="Disconnect" onPress={handleDisconnect} />
+          ) : null}
         </View>
 
         <SectionHeader label="OpenRouter" />
@@ -186,6 +264,7 @@ export default function SettingsScreen() {
           </Text>
         </View>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -212,18 +291,6 @@ function SectionHeader({ label }: { label: string }) {
   );
 }
 
-function formatRelativeTime(iso?: string): string {
-  if (!iso) return 'never';
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const minutes = Math.round(diffMs / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-}
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -244,5 +311,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 16,
+  },
+  segmented: {
+    flexDirection: 'row',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  segment: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

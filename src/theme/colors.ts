@@ -4,8 +4,10 @@
  * and the pig-color-system skill. Do not hand-roll new colors here — add
  * them to DESIGN.md first, validate contrast, then port the value.
  */
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useColorScheme } from 'react-native';
+
+import { loadThemePreference, saveThemePreference } from '../storage';
 
 export type ColorScheme = 'light' | 'dark';
 /** A user-selectable preference: 'system' follows the OS setting. */
@@ -159,8 +161,23 @@ const ThemeModeContext = createContext<ThemeModeContextValue | null>(null);
  */
 export function ThemeModeProvider({ children }: { children: React.ReactNode }) {
   const systemScheme = useSystemColorScheme();
-  const [preference, setPreference] = useState<ThemePreference>('system');
+  const [preference, setPreferenceState] = useState<ThemePreference>('system');
   const scheme = preference === 'system' ? systemScheme : preference;
+
+  // Load the persisted choice once on mount. If nothing was ever saved (or
+  // the read fails), stay on the 'system' default — no loading gate needed
+  // here since a brief moment on the system scheme before this resolves
+  // isn't the jarring kind of flash (unlike RootNavigator's Setup/Tabs gate).
+  useEffect(() => {
+    loadThemePreference().then((stored) => {
+      if (stored) setPreferenceState(stored);
+    });
+  }, []);
+
+  const setPreference = (next: ThemePreference) => {
+    setPreferenceState(next);
+    saveThemePreference(next);
+  };
 
   const value = useMemo(
     () => ({ preference, scheme, setPreference }),

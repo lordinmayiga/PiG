@@ -21,7 +21,14 @@
     },
     "plugins": [
       "expo-dev-client",
-      "expo-font"
-    ]
+      "expo-font",
+      "expo-secure-store"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "52f5e8a4-ce66-4e73-bf8a-d72057221701"
+      }
+    },
+    "owner": "lordins-team"
   }
 }

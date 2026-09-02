@@ -30,7 +30,7 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.neutral[100], borderRadius: radius.chip, borderColor: colors.border }]}>
+    <View style={[styles.container, { backgroundColor: colors.card, borderRadius: radius.chip, borderColor: colors.border }]}>
       <View style={[styles.header, { borderBottomColor: colors.border, paddingHorizontal: spacing.sm, paddingVertical: spacing.xxs }]}>
         <Text
           style={[typeScale.caption, { color: colors.inkSecondary }]}

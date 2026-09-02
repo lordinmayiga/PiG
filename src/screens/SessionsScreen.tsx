@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -7,6 +7,7 @@ import { Plus } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
 import { mockSessions, emptySessions } from '../fixtures/sessions';
+import { useSessions } from '../contexts/SessionsContext';
 import type { Session } from '../types';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
 import SessionCard from './sessions/SessionCard';
@@ -28,7 +29,17 @@ export default function SessionsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<SessionsStackParamList, 'Sessions'>>();
 
-  const [sessions, setSessions] = useState<Session[]>(DEV_START_FROM_EMPTY ? emptySessions : mockSessions);
+  const { sessions, removeSessionLocally, addSessionLocally, renameSessionLocally, setSessionsLocally } =
+    useSessions();
+  // DEV_START_FROM_EMPTY only matters on first mount, since SessionsContext
+  // already seeds from mockSessions itself — apply it once here rather than
+  // duplicating the seed value in two places. A brief mockSessions flash
+  // before this effect runs is an acceptable trade for not touching
+  // another component's state during render.
+  useEffect(() => {
+    if (DEV_START_FROM_EMPTY) setSessionsLocally(emptySessions);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally once-only, see comment above
+  }, []);
   const [isNewSessionVisible, setNewSessionVisible] = useState(false);
   const [menuSession, setMenuSession] = useState<Session | null>(null);
   const [renameSession, setRenameSession] = useState<Session | null>(null);
@@ -43,7 +54,7 @@ export default function SessionsScreen() {
       {
         text: 'Kill session',
         style: 'destructive',
-        onPress: () => setSessions((prev) => prev.filter((s) => s.id !== session.id)),
+        onPress: () => removeSessionLocally(session.id),
       },
     ]);
   };
@@ -59,7 +70,7 @@ export default function SessionsScreen() {
   };
 
   const handleRenameSave = (session: Session, newName: string) => {
-    setSessions((prev) => prev.map((s) => (s.id === session.id ? { ...s, name: newName } : s)));
+    renameSessionLocally(session.id, newName);
     setRenameSession(null);
   };
 
@@ -75,7 +86,7 @@ export default function SessionsScreen() {
       lastActivityAt: now,
       lastMessagePreview: 'Session started — no messages yet.',
     };
-    setSessions((prev) => [newSession, ...prev]);
+    addSessionLocally(newSession);
     setNewSessionVisible(false);
   };
 
@@ -87,7 +98,7 @@ export default function SessionsScreen() {
         <Text style={[typeScale.title, { color: colors.ink }]}>Sessions</Text>
         {__DEV__ && (
           <Pressable
-            onPress={() => setSessions((prev) => (prev.length === 0 ? mockSessions : emptySessions))}
+            onPress={() => setSessionsLocally(sessions.length === 0 ? mockSessions : emptySessions)}
             accessibilityRole="button"
             accessibilityLabel="Toggle empty state preview"
           >

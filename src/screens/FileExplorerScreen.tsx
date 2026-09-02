@@ -1,11 +1,17 @@
 import { useCallback, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { File, FileText, Folder, Image as ImageIcon } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { ChevronLeft, File, FileText, Folder, Image as ImageIcon } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
+import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
 import type { FileNode } from '../types';
 import { mockFileContents, mockFileTree } from '../fixtures/files';
 import { FileViewerSheet, type ViewableFile } from '../components/FileViewerSheet';
+
+type Nav = NativeStackNavigationProp<SessionsStackParamList, 'FileExplorer'>;
 
 function parentPath(path: string): string {
   const segments = path.split('/');
@@ -42,6 +48,8 @@ function iconFor(node: FileNode) {
  */
 export default function FileExplorerScreen() {
   const { colors, spacing, typeScale, minTouchTarget } = useTheme();
+  const insets = useSafeAreaInsets();
+  const navigation = useNavigation<Nav>();
   const [currentPath, setCurrentPath] = useState('');
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
@@ -88,6 +96,20 @@ export default function FileExplorerScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.canvas }]}>
+      <View style={[styles.header, { paddingTop: insets.top + spacing.sm, paddingHorizontal: spacing.md, paddingBottom: spacing.xs }]}>
+        <Pressable
+          onPress={() => navigation.goBack()}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          style={[styles.backButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
+        >
+          <Icon icon={ChevronLeft} size={24} color={colors.ink} />
+        </Pressable>
+        <Text style={[typeScale.heading, { color: colors.ink }]} maxFontSizeMultiplier={1.3}>
+          File Explorer
+        </Text>
+      </View>
+
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -124,7 +146,7 @@ export default function FileExplorerScreen() {
       <FlatList
         data={entries}
         keyExtractor={(item) => item.path}
-        contentContainerStyle={{ paddingVertical: spacing.xs }}
+        contentContainerStyle={{ paddingTop: spacing.xs, paddingBottom: spacing.xs + insets.bottom }}
         ListEmptyComponent={
           <View style={[styles.emptyState, { padding: spacing.lg }]}>
             <Text style={[typeScale.body, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
@@ -165,6 +187,16 @@ export default function FileExplorerScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  backButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: -8,
   },
   breadcrumbBar: {
     flexGrow: 0,

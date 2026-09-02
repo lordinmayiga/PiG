@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { saveBridgeCredentials } from '../secureStorage';
 import { useTheme } from '../theme';
 import ConnectStep from './setup/ConnectStep';
 import ConnectingStep from './setup/ConnectingStep';
@@ -46,6 +47,14 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
     setStep('connecting');
     const resolved = resolveOutcome(form, forcedOutcome);
     connectTimer.current = setTimeout(() => {
+      if (resolved === 'success') {
+        // No real handshake yet (Phase 6) — but the pairing "succeeded" per
+        // the mock outcome, so persist what the user typed as if it were
+        // the bridge-issued credentials. Fire-and-forget: a failed write is
+        // best-effort (see secureStorage.ts) and just leaves Setup showing
+        // again next launch, the safe fallback.
+        saveBridgeCredentials({ host: form.host.trim(), token: form.token.trim() });
+      }
       setOutcome(resolved);
       setStep(resolved === 'success' ? 'success' : 'error');
     }, MOCK_CONNECT_DELAY_MS);
@@ -59,7 +68,7 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: colors.canvas }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior="padding"
     >
       <ScrollView
         style={{ flex: 1 }}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Rocket, SquareTerminal } from 'lucide-react-native';
 
@@ -82,7 +82,8 @@ export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessi
         accessibilityLabel="Close new session sheet"
         accessibilityRole="button"
       />
-      <View
+      <KeyboardAvoidingView
+        behavior="padding"
         style={[
           styles.sheet,
           {
@@ -160,6 +161,7 @@ export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessi
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
             style={{ marginTop: spacing.xs }}
             contentContainerStyle={styles.chipRow}
           >
@@ -241,7 +243,7 @@ export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessi
             </Text>
           </Pressable>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

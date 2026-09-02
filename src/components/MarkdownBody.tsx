@@ -208,7 +208,7 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                 style: typeScale[role],
                 color: colors.ink,
                 accentColor: colors.accent,
-                codeBg: colors.neutral[100],
+                codeBg: colors.card,
                 monoLoaded,
               })}
             </Text>
@@ -226,7 +226,7 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                   style: typeScale.body,
                   color: colors.inkSecondary,
                   accentColor: colors.accent,
-                  codeBg: colors.neutral[100],
+                  codeBg: colors.card,
                   monoLoaded,
                 })}
               </Text>
@@ -247,7 +247,7 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                       style: typeScale.body,
                       color: colors.ink,
                       accentColor: colors.accent,
-                      codeBg: colors.neutral[100],
+                      codeBg: colors.card,
                       monoLoaded,
                     })}
                   </Text>
@@ -263,7 +263,7 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
               style: typeScale.body,
               color: colors.ink,
               accentColor: colors.accent,
-              codeBg: colors.neutral[100],
+              codeBg: colors.card,
               monoLoaded,
             })}
           </Text>

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useRef, useState } from 'react';
+import { KeyboardAvoidingView, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '../../theme';
@@ -15,6 +15,16 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
+  const inputRef = useRef<TextInput>(null);
+
+  // Per pig-keyboard-handling: focus after the sheet's slide-in animation
+  // instead of a bare `autoFocus`, which fires the keyboard at the same
+  // instant the sheet starts animating and fights that transition. Modal's
+  // `onShow` fires as the animation starts, so wait it out first — 300ms
+  // matches RN's default Modal slide duration.
+  const handleShow = () => {
+    setTimeout(() => inputRef.current?.focus(), 300);
+  };
 
   // Reset the draft each time the sheet transitions from closed to open —
   // setState during render rather than in an effect, per React's
@@ -35,14 +45,15 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
   };
 
   return (
-    <Modal visible={session !== null} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={session !== null} transparent animationType="slide" onRequestClose={onClose} onShow={handleShow}>
       <Pressable
         style={[styles.backdrop, { backgroundColor: colors.scrim }]}
         onPress={onClose}
         accessibilityLabel="Close rename sheet"
         accessibilityRole="button"
       />
-      <View
+      <KeyboardAvoidingView
+        behavior="padding"
         style={[
           styles.sheet,
           {
@@ -57,9 +68,9 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
         <Text style={[typeScale.heading, { color: colors.ink }]}>Rename session</Text>
 
         <TextInput
+          ref={inputRef}
           value={name}
           onChangeText={setName}
-          autoFocus
           placeholder="Session name"
           placeholderTextColor={colors.inkPlaceholder}
           style={[
@@ -104,7 +115,7 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
             </Text>
           </Pressable>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
