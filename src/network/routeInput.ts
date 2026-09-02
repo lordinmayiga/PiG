@@ -4,9 +4,10 @@
  * Sends a real `route_input` envelope over the shared bridge connection
  * (src/network/bridgeConnection.ts) and awaits the matching `action_result`
  * — against either the mock transport (src/dev/mockBridgeServer.ts) or the
- * real VPS backend (BACKEND_SETUP_PLAN.md), depending on
- * `bridgeConnection.ts`'s `USE_MOCK_TRANSPORT` toggle. Per SPEC §7 the
- * OpenRouter key is server-side only — this file never calls OpenRouter
+ * real VPS backend (BACKEND_SETUP_PLAN.md), depending on the "use real VPS
+ * backend" preference (storage.ts, flipped from Settings) that
+ * `bridgeConnection.ts`'s `connectBridge` reads at connect time. Per SPEC §7
+ * the OpenRouter key is server-side only — this file never calls OpenRouter
  * directly.
  *
  * Falls back to the same local heuristic keyword-matching this file used to

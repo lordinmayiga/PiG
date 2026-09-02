@@ -18,6 +18,7 @@ import type { ThemePreference } from './theme/colors';
 
 const KEYS = {
   themePreference: 'pig.themePreference',
+  useRealBackend: 'pig.useRealBackend',
 } as const;
 
 export async function loadThemePreference(): Promise<ThemePreference | null> {
@@ -33,6 +34,30 @@ export async function loadThemePreference(): Promise<ThemePreference | null> {
 export async function saveThemePreference(value: ThemePreference): Promise<void> {
   try {
     await AsyncStorage.setItem(KEYS.themePreference, value);
+  } catch {
+    // Best-effort — see file header.
+  }
+}
+
+/**
+ * Dev toggle (PHASE_7_REAL_BACKEND_PLAN.md step 1): whether the app should
+ * connect to the real VPS `pig-bridge` service over a websocket, or the
+ * in-process mock (`src/dev/mockBridgeServer.ts`). Defaults to mock so a
+ * fresh install/dev checkout stays exercisable with no VPS reachable.
+ * Read once at connect time (see bridgeConnection.ts) rather than live —
+ * flipping it takes effect on next app restart, not mid-session.
+ */
+export async function loadUseRealBackend(): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(KEYS.useRealBackend)) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export async function saveUseRealBackend(value: boolean): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.useRealBackend, value ? 'true' : 'false');
   } catch {
     // Best-effort — see file header.
   }

@@ -15,23 +15,23 @@ import { BridgeClient, MockTransport, WebSocketTransport, bridgeUrlFromHost, typ
 
 let client: BridgeClient | null = null;
 
-/** Dev toggle: when true (default), talks to the in-process mock bridge
- * server (src/dev/mockBridgeServer.ts) instead of a real websocket, so the
- * app is exercisable with no VPS backend reachable. Flip to false (or make
- * this a Settings toggle later) once a real paired VPS is expected to be
- * reachable at the stored host. */
-export const USE_MOCK_TRANSPORT = true;
-
 /**
  * Creates (if needed) and connects the singleton `BridgeClient` for the
  * given credentials. Calling this again with the client already connected
  * is a no-op — callers (BridgeContext) are expected to call
  * `disconnectBridge()` first if credentials actually changed (e.g.
  * re-pairing against a different host).
+ *
+ * `useRealBackend` picks the transport: real websocket to the paired VPS's
+ * `pig-bridge` service, or the in-process mock (src/dev/mockBridgeServer.ts)
+ * when false/omitted, so the app stays exercisable with no VPS reachable.
+ * Callers read the persisted preference (see `storage.ts`'s
+ * `loadUseRealBackend`, flipped from Settings) once at connect time — this
+ * is a restart-to-apply dev toggle, not a live mid-session swap.
  */
-export function connectBridge(host: string, token: string): BridgeClient {
+export function connectBridge(host: string, token: string, useRealBackend = false): BridgeClient {
   if (client) return client;
-  const transport = USE_MOCK_TRANSPORT ? new MockTransport() : new WebSocketTransport(bridgeUrlFromHost(host));
+  const transport = useRealBackend ? new WebSocketTransport(bridgeUrlFromHost(host)) : new MockTransport();
   client = new BridgeClient({ transport, token });
   client.connect();
   return client;

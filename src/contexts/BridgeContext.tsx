@@ -12,6 +12,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
 import { loadBridgeCredentials, subscribeToCredentialsChange } from '../secureStorage';
+import { loadUseRealBackend } from '../storage';
 import { connectBridge, disconnectBridge, type ConnectionStatus } from '../network/bridgeConnection';
 import type { BridgeClient } from '../network/bridgeClient';
 
@@ -44,7 +45,10 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const bridgeClient = connectBridge(credentials.host, credentials.token);
+      const useRealBackend = await loadUseRealBackend();
+      if (cancelled) return;
+
+      const bridgeClient = connectBridge(credentials.host, credentials.token, useRealBackend);
       setClient(bridgeClient);
       setStatus(bridgeClient.getStatus());
       unsubscribeStatus = bridgeClient.onConnectionStatus(setStatus);

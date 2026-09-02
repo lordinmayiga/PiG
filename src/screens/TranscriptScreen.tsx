@@ -64,7 +64,7 @@ export default function TranscriptScreen() {
   // schema ("render cache immediately, then send resync_request").
   //
   // DEV FALLBACK: if the cache is empty AND there's no bridge client to
-  // resync against (e.g. USE_MOCK_TRANSPORT off with nothing paired), seed
+  // resync against (e.g. real-backend preference on with nothing paired), seed
   // from the fixture transcript so the screen isn't blank in that
   // configuration. Once a client exists, `resync_snapshot` below is the
   // real source of truth and overwrites whatever was seeded/cached.

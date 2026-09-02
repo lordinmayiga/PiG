@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { SettingsRow } from '../components/SettingsRow';
 import { mockOpenRouterSettings } from '../fixtures/settings';
 import { clearBridgeCredentials, loadBridgeCredentials, type BridgeCredentials } from '../secureStorage';
+import { loadUseRealBackend, saveUseRealBackend } from '../storage';
 import { Icon, useTheme, useThemeMode, type ThemePreference } from '../theme';
 import type { OpenRouterSettings } from '../types';
 
@@ -43,10 +44,27 @@ export default function SettingsScreen() {
   const [credentials, setCredentials] = useState<BridgeCredentials | null>(null);
   const [openRouter, setOpenRouter] = useState<OpenRouterSettings>(mockOpenRouterSettings);
   const [requireUnlock, setRequireUnlock] = useState(false);
+  // Dev toggle (PHASE_7_REAL_BACKEND_PLAN.md step 1): real VPS backend vs.
+  // in-process mock. Read once from storage, applied at next BridgeContext
+  // connect (see bridgeConnection.ts) — flipping it doesn't live-swap the
+  // active connection, hence the restart prompt in handleToggleRealBackend.
+  const [useRealBackend, setUseRealBackend] = useState(false);
 
   useEffect(() => {
     loadBridgeCredentials().then(setCredentials);
+    loadUseRealBackend().then(setUseRealBackend);
   }, []);
+
+  const handleToggleRealBackend = (value: boolean) => {
+    setUseRealBackend(value);
+    void saveUseRealBackend(value);
+    Alert.alert(
+      'Restart required',
+      value
+        ? 'Close and reopen PiG to connect to your VPS backend.'
+        : 'Close and reopen PiG to switch back to the mock backend.',
+    );
+  };
 
   const handleDisconnect = () => {
     Alert.alert('Disconnect from VPS?', "You'll need to pair again to reconnect.", [
@@ -157,6 +175,25 @@ export default function SettingsScreen() {
           {credentials ? (
             <SettingsRow icon={LogOut} label="Disconnect" onPress={handleDisconnect} />
           ) : null}
+          <SettingsRow
+            icon={Server}
+            label="Use real VPS backend"
+            trailing={
+              <Switch
+                value={useRealBackend}
+                onValueChange={handleToggleRealBackend}
+                trackColor={{ false: colors.border, true: colors.accent }}
+                thumbColor={colors.onAccent}
+                accessibilityLabel="Use real VPS backend"
+              />
+            }
+          />
+          <Text
+            maxFontSizeMultiplier={maxFontScale}
+            style={[typeScale.caption, { color: colors.inkSecondary, paddingBottom: spacing.sm }]}
+          >
+            Dev toggle — off talks to the in-app mock, on connects to the paired VPS. Takes effect on next restart.
+          </Text>
         </View>
 
         <SectionHeader label="OpenRouter" />
