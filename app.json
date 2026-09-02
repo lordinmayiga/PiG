@@ -6,7 +6,9 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "platforms": ["android"],
+    "platforms": [
+      "android"
+    ],
     "android": {
       "package": "com.pig.app",
       "adaptiveIcon": {
@@ -18,6 +20,9 @@
       "predictiveBackGestureEnabled": false,
       "edgeToEdgeEnabled": true
     },
-    "plugins": ["expo-dev-client"]
+    "plugins": [
+      "expo-dev-client",
+      "expo-font"
+    ]
   }
 }
