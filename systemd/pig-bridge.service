@@ -1,0 +1,20 @@
+[Unit]
+Description=PiG bridge — websocket server for the PiG mobile app
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/PiG/backend
+# tsx runs the TS source directly — no separate build step needed for this
+# single-VPS deployment (see BACKEND_SETUP_PLAN.md's repo layout rationale).
+ExecStart=/usr/bin/env npx tsx src/server.ts
+EnvironmentFile=-/root/projects/PiG/backend/.env
+Restart=on-failure
+RestartSec=3
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pig-bridge
+
+[Install]
+WantedBy=multi-user.target
