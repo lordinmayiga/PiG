@@ -1,0 +1,26 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+.DS_Store
+*.pem
+.env*.local
+
+npm-debug.*
+yarn-error.*
+
+*.tsbuildinfo
+
+.metro-health-check*
+
+# EAS
+.eas/
+
+# macOS
+.DS_Store
