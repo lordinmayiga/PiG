@@ -9,7 +9,9 @@ import TranscriptScreen from '../screens/TranscriptScreen';
 // a session, not separate tabs).
 export type SessionsStackParamList = {
   Sessions: undefined;
-  Transcript: undefined;
+  // sessionId identifies which session's transcript to load — added when
+  // SessionsScreen wired up tap-to-open navigation (Phase 4).
+  Transcript: { sessionId: string };
   FileExplorer: undefined;
 };
 

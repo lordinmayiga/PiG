@@ -15,16 +15,21 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export default function RootNavigator() {
   // PLACEHOLDER: local state standing in for real persisted pairing state.
+  // SetupScreen flips this via onSetupComplete once its local mock flow
+  // finishes, so the app actually navigates through to the Tab shell for a
+  // real demo — but it's still just component state, not persisted.
   // Replace with the actual pairing-state check (e.g. from expo-secure-store /
   // a context provider) in Phase 5 — see SETUP_PLAN.md Phase 5.
-  const [isPaired] = useState(false);
+  const [isPaired, setIsPaired] = useState(false);
 
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       {isPaired ? (
         <Stack.Screen name="Tabs" component={TabNavigator} />
       ) : (
-        <Stack.Screen name="Setup" component={SetupScreen} />
+        <Stack.Screen name="Setup">
+          {() => <SetupScreen onSetupComplete={() => setIsPaired(true)} />}
+        </Stack.Screen>
       )}
     </Stack.Navigator>
   );
