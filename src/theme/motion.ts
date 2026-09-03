@@ -36,6 +36,11 @@ AccessibilityInfo.addEventListener?.('reduceMotionChanged', (enabled) => {
   reduceMotionEnabled = enabled;
 });
 
+/** Current reduced-motion setting, for screens that hand-roll a one-off animation. */
+export function isReduceMotionEnabled(): boolean {
+  return reduceMotionEnabled;
+}
+
 /**
  * Hook for press feedback on a Pressable: spread `pressProps` on the
  * Pressable (onPressIn/onPressOut) and `style` on the Animated.View it

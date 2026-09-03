@@ -1,13 +1,16 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Globe, Monitor, RefreshCw, RotateCcw, Smartphone, Trash2 } from 'lucide-react-native';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import type { WebViewNavigation } from 'react-native-webview';
+import type { WebViewProgressEvent } from 'react-native-webview/lib/WebViewTypes';
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
 import { TabStrip } from '../components/TabStrip';
 import { createBlankTab, DESKTOP_USER_AGENT, type BrowserTab } from '../fixtures/browser';
 import { useTheme } from '../theme';
+import { isReduceMotionEnabled } from '../theme/motion';
 import { Icon, iconSizes } from '../theme/icons';
 
 /**
@@ -29,6 +32,31 @@ export default function BrowserScreen() {
   const webviewRefs = useRef<Record<string, WebView | null>>({});
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+
+  const loadProgress = useSharedValue(0);
+  const loadProgressOpacity = useSharedValue(0);
+
+  const handleLoadProgress = (id: string, event: WebViewProgressEvent) => {
+    if (id !== activeTabId) return;
+    const progress = event.nativeEvent.progress;
+    if (isReduceMotionEnabled()) {
+      loadProgress.value = progress;
+    } else {
+      loadProgress.value = withTiming(progress, { duration: 150, easing: Easing.out(Easing.cubic) });
+    }
+    loadProgressOpacity.value = progress >= 1 ? withTiming(0, { duration: 220 }) : 1;
+  };
+
+  const progressBarStyle = useAnimatedStyle(() => ({
+    width: `${loadProgress.value * 100}%`,
+    opacity: loadProgressOpacity.value,
+  }));
+
+  useEffect(() => {
+    loadProgress.value = 0;
+    loadProgressOpacity.value = 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId]);
 
   const updateTab = (id: string, patch: Partial<BrowserTab>) => {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -158,6 +186,10 @@ export default function BrowserScreen() {
         </Pressable>
       </View>
 
+      <View style={styles.progressTrack}>
+        <Animated.View style={[styles.progressBar, progressBarStyle, { backgroundColor: colors.accent }]} />
+      </View>
+
       <View
         style={[
           styles.controlsRow,
@@ -206,6 +238,7 @@ export default function BrowserScreen() {
                 source={{ uri: tab.url }}
                 userAgent={tab.uaMode === 'desktop' ? DESKTOP_USER_AGENT : undefined}
                 onNavigationStateChange={(nav) => handleNavigationStateChange(tab.id, nav)}
+                onLoadProgress={(event) => handleLoadProgress(tab.id, event)}
                 style={{ backgroundColor: colors.canvas }}
               />
             </View>
@@ -288,6 +321,13 @@ const styles = StyleSheet.create({
   controlsRow: {
     flexDirection: 'row',
     borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  progressTrack: {
+    height: 2,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: 2,
   },
   controlButton: {
     alignItems: 'center',
