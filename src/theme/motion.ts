@@ -11,6 +11,7 @@ import {
   useSharedValue,
   withDelay,
   withRepeat,
+  withSequence,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -142,4 +143,54 @@ export function useTypingDotPulse(index: number): SharedValue<number> {
   }, [index]);
 
   return opacity;
+}
+
+const CROSS_FADE_DURATION = 180;
+
+/**
+ * Opacity-only cross-fade, re-triggered whenever `key` changes — used for
+ * step transitions (e.g. Setup's connect -> connecting -> result) where a
+ * slide would be too busy. Wrap the switched content in a single
+ * `Animated.View` with this style; pass the current step/value as `key`.
+ */
+export function useCrossFade(key: unknown) {
+  const opacity = useSharedValue(reduceMotionEnabled ? 1 : 0);
+
+  useEffect(() => {
+    if (reduceMotionEnabled) {
+      opacity.value = 1;
+      return;
+    }
+    opacity.value = 0;
+    opacity.value = withTiming(1, { duration: CROSS_FADE_DURATION, easing: Easing.inOut(Easing.quad) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return useAnimatedStyle(() => ({ opacity: opacity.value }));
+}
+
+/**
+ * Checkmark scale-bounce played once a pending action (e.g. a pairing
+ * handshake) is acknowledged: `scale: 0.8 -> 1.05 -> 1.0`. Pass `active`
+ * true only once, when the ack lands — settles straight to `1` under
+ * reduced motion.
+ */
+export function useCheckmarkBounce(active: boolean): SharedValue<number> {
+  const scale = useSharedValue(0.8);
+
+  useEffect(() => {
+    if (!active) return;
+    if (reduceMotionEnabled) {
+      scale.value = 1;
+      return;
+    }
+    scale.value = 0.8;
+    scale.value = withSequence(
+      withTiming(1.05, { duration: 140, easing: Easing.out(Easing.cubic) }),
+      withTiming(1.0, { duration: 120, easing: Easing.out(Easing.cubic) }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
+  return scale;
 }

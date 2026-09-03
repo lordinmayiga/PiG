@@ -13,11 +13,11 @@ import {
   type TextInputProps,
   View,
 } from 'react-native';
-import Animated from 'react-native-reanimated';
+import Animated, { Easing, FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { ChevronDown, ChevronUp } from 'lucide-react-native';
 
 import { useTheme } from '../../theme';
-import { usePressScale } from '../../theme/motion';
+import { isReduceMotionEnabled, usePressScale } from '../../theme/motion';
 import { Icon, iconSizes } from '../../theme/icons';
 
 interface PrimaryButtonProps {
@@ -169,8 +169,19 @@ interface CollapsiblePanelProps {
 
 export function CollapsiblePanel({ title, expanded, onToggle, children, icon }: CollapsiblePanelProps) {
   const { colors, radius, spacing, typeScale, minTouchTarget, maxFontScale } = useTheme();
+  const reduceMotion = isReduceMotionEnabled();
+
   return (
-    <View style={{ borderRadius: radius.card, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card }}>
+    <Animated.View
+      layout={reduceMotion ? undefined : LinearTransition.duration(200).easing(Easing.out(Easing.cubic))}
+      style={{
+        borderRadius: radius.card,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.card,
+        overflow: 'hidden',
+      }}
+    >
       <Pressable
         onPress={onToggle}
         accessibilityRole="button"
@@ -196,9 +207,15 @@ export function CollapsiblePanel({ title, expanded, onToggle, children, icon }: 
         {expanded ? <ChevronGlyph up color={colors.inkSecondary} /> : <ChevronGlyph up={false} color={colors.inkSecondary} />}
       </Pressable>
       {expanded ? (
-        <View style={{ paddingHorizontal: spacing.sm, paddingBottom: spacing.sm, gap: spacing.xs }}>{children}</View>
+        <Animated.View
+          entering={reduceMotion ? undefined : FadeIn.duration(150)}
+          exiting={reduceMotion ? undefined : FadeOut.duration(120)}
+          style={{ paddingHorizontal: spacing.sm, paddingBottom: spacing.sm, gap: spacing.xs }}
+        >
+          {children}
+        </Animated.View>
       ) : null}
-    </View>
+    </Animated.View>
   );
 }
 
