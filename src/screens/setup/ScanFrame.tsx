@@ -27,7 +27,7 @@ export default function ScanFrame() {
       .then((reduced) => {
         if (cancelled || reduced) return;
         lineY.value = withRepeat(
-          withTiming(FRAME_SIZE - 4, { duration: 1600, easing: Easing.inOut(Easing.quad) }),
+          withTiming(FRAME_SIZE - 4, { duration: 1200, easing: Easing.inOut(Easing.quad) }),
           -1,
           true,
         );

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, ScrollView, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { loadBridgeCredentials, saveBridgeCredentials } from '../secureStorage';
 import { saveOpenRouterKey } from '../storage';
 import { useTheme } from '../theme';
+import { useCrossFade } from '../theme/motion';
 import ConnectStep from './setup/ConnectStep';
 import ConnectingStep from './setup/ConnectingStep';
 import ResultStep from './setup/ResultStep';
@@ -13,6 +15,8 @@ import { emptyConnectForm, resolveOutcome, type ConnectFormState, type ConnectMo
 
 /** Simulated pairing round-trip latency (no real network — Phase 6 wires the real one). */
 const MOCK_CONNECT_DELAY_MS = 1500;
+/** How long the checkmark-ack state holds on screen before handing off to ResultStep. */
+const CONNECT_ACK_HOLD_MS = 420;
 
 interface SetupScreenProps {
   /**
@@ -35,12 +39,15 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
   const [tokenPanelExpanded, setTokenPanelExpanded] = useState(false);
   const [forcedOutcome, setForcedOutcome] = useState<ConnectOutcome | null>(null);
   const [outcome, setOutcome] = useState<ConnectOutcome>('success');
+  const [connectAck, setConnectAck] = useState(false);
 
   const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
       if (connectTimer.current) clearTimeout(connectTimer.current);
+      if (ackTimer.current) clearTimeout(ackTimer.current);
     };
   }, []);
 
@@ -56,6 +63,7 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
       setForm(overrideForm);
     }
     setStep('connecting');
+    setConnectAck(false);
     const resolved = resolveOutcome(activeForm, forcedOutcome);
     connectTimer.current = setTimeout(async () => {
       if (resolved === 'success') {
@@ -65,7 +73,16 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
         await saveBridgeCredentials({ host: hostToSave, token: tokenToSave });
       }
       setOutcome(resolved);
-      setStep(resolved === 'success' ? 'success' : 'error');
+      if (resolved === 'success') {
+        // Briefly show the checkmark bounce acknowledging the handshake before handing off to ResultStep.
+        setConnectAck(true);
+        ackTimer.current = setTimeout(() => {
+          setStep('success');
+          setConnectAck(false);
+        }, CONNECT_ACK_HOLD_MS);
+      } else {
+        setStep('error');
+      }
     }, MOCK_CONNECT_DELAY_MS);
   };
 
@@ -82,6 +99,9 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
     }
     onSetupComplete();
   };
+
+  // Cross-fades the whole step area (connect -> connecting -> result/openrouter).
+  const crossFadeStyle = useCrossFade(step);
 
   const handleTryAgain = () => {
     // Form state (host/token) is preserved — only the step changes back.
@@ -105,7 +125,7 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={{ width: '100%', maxWidth: 420, alignSelf: 'center' }}>
+        <Animated.View style={[{ width: '100%', maxWidth: 420, alignSelf: 'center' }, crossFadeStyle]}>
           {step === 'connect' && (
             <ConnectStep
               mode={mode}
@@ -120,7 +140,7 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
             />
           )}
 
-          {step === 'connecting' && <ConnectingStep />}
+          {step === 'connecting' && <ConnectingStep ack={connectAck} />}
 
           {(step === 'success' || step === 'error') && (
             <ResultStep
@@ -134,7 +154,7 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
           {step === 'openrouter' && (
             <OpenRouterStep savedHost={form.host.trim()} onDone={handleOpenRouterDone} />
           )}
-        </View>
+        </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
