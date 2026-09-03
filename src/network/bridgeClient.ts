@@ -1,26 +1,23 @@
 // Websocket bridge client (PHASE_5_6_PLAN.md Phase 6.2). Talks the Envelope
-// protocol defined in src/types/index.ts to either the real VPS backend
-// (SPEC.md §4, not yet built) or the in-process dev fixture in
-// src/dev/mockBridgeServer.ts, via an injected `BridgeTransport` — swapping
-// the real websocket in later is a constructor argument change, not a
-// rewrite. This module is standalone: nothing wires it into a screen/context
-// yet, that's deliberately follow-up work.
+// protocol defined in src/types/index.ts to the real VPS backend
+// via WebSocketTransport.
 
-import {
-  handleMockBridgeMessage,
-  type MockServerSocket,
-} from '../dev/mockBridgeServer';
 import type {
   ActionConfirmPayload,
   ActionResultPayload,
   BridgeError,
   Envelope,
+  FsEntry,
+  FsListResultPayload,
+  FsReadResultPayload,
+  GetOpenRouterKeyAckPayload,
   HelloAckPayload,
   HelloPayload,
   ResyncRequestPayload,
   ResyncSnapshotPayload,
   RouteInputPayload,
   SessionListUpdatePayload,
+  SetOpenRouterKeyAckPayload,
   TranscriptChunkPayload,
 } from '../types';
 
@@ -47,8 +44,7 @@ class Emitter<T> {
 }
 
 // --- Transport interface ----------------------------------------------------
-// The thing bridgeClient sends/receives raw envelopes through. A real
-// backend connection and the in-process mock both implement this.
+// The thing bridgeClient sends/receives raw envelopes through.
 export interface BridgeTransport {
   open(): void;
   close(): void;
@@ -61,65 +57,10 @@ export interface BridgeTransport {
 }
 
 /**
- * In-process transport that hands outgoing envelopes straight to
- * handleMockBridgeMessage and delivers its replies back synchronously (on a
- * microtask, to keep behavior consistent with a real async socket). No
- * network involved — see src/dev/mockBridgeServer.ts.
- */
-export class MockTransport implements BridgeTransport {
-  private messageEmitter = new Emitter<Envelope>();
-  private openEmitter = new Emitter<void>();
-  private closeEmitter = new Emitter<string | undefined>();
-  private opened = false;
-
-  private socket: MockServerSocket = {
-    send: (envelope) => {
-      // Simulate network async-ness so consumers can't accidentally depend
-      // on synchronous delivery.
-      queueMicrotask(() => {
-        if (this.opened) {
-          this.messageEmitter.emit(envelope);
-        }
-      });
-    },
-  };
-
-  open(): void {
-    this.opened = true;
-    queueMicrotask(() => this.openEmitter.emit());
-  }
-
-  close(): void {
-    if (!this.opened) return;
-    this.opened = false;
-    this.closeEmitter.emit(undefined);
-  }
-
-  send(envelope: Envelope): void {
-    if (!this.opened) return;
-    queueMicrotask(() => handleMockBridgeMessage(envelope, this.socket));
-  }
-
-  onMessage(listener: (envelope: Envelope) => void): () => void {
-    return this.messageEmitter.on(listener);
-  }
-
-  onOpen(listener: () => void): () => void {
-    return this.openEmitter.on(listener);
-  }
-
-  onClose(listener: (reason?: string) => void): () => void {
-    return this.closeEmitter.on(listener);
-  }
-}
-
-/**
  * Real websocket transport, talking to the VPS backend built per
  * BACKEND_SETUP_PLAN.md. Verified live against that backend on 2026-09-02
  * (hello/resync/ping/route_input round-trips all confirmed over an actual
- * `ws://` connection). Kept behind the same `BridgeTransport` interface as
- * `MockTransport` so which one a caller constructs with is the only
- * difference — nothing else in `BridgeClient` changes.
+ * `ws://` connection).
  *
  * RN's global `WebSocket` (no import needed, per Expo v57 docs) is used
  * directly — this app targets Android only and RN's built-in WebSocket
@@ -142,10 +83,12 @@ export class WebSocketTransport implements BridgeTransport {
     // again without close()) must not leak listeners onto the new one.
     this.teardownSocket();
 
+    console.log('[PiG Bridge] Opening WebSocket to:', this.url);
     let socket: WebSocket;
     try {
       socket = new WebSocket(this.url);
     } catch (err) {
+      console.error('[PiG Bridge] Failed to construct WebSocket to:', this.url, err);
       // Malformed URL, etc — surface as a close so BridgeClient's reconnect
       // logic handles it uniformly rather than throwing out of open().
       queueMicrotask(() => this.closeEmitter.emit(err instanceof Error ? err.message : 'failed to construct WebSocket'));
@@ -153,7 +96,10 @@ export class WebSocketTransport implements BridgeTransport {
     }
     this.ws = socket;
 
-    socket.onopen = () => this.openEmitter.emit();
+    socket.onopen = () => {
+      console.log('[PiG Bridge] WebSocket opened successfully to:', this.url);
+      this.openEmitter.emit();
+    };
     socket.onmessage = (event: { data: unknown }) => {
       if (typeof event.data !== 'string') return; // no binary frames expected
       let parsed: Envelope;
@@ -164,12 +110,11 @@ export class WebSocketTransport implements BridgeTransport {
       }
       this.messageEmitter.emit(parsed);
     };
-    socket.onerror = () => {
-      // RN's WebSocket error events carry little detail; the ensuing
-      // `onclose` (which always fires after `onerror`) is what actually
-      // drives BridgeClient's reconnect — this is just for local debugging.
+    socket.onerror = (err) => {
+      console.error('[PiG Bridge] WebSocket error on:', this.url, err);
     };
-    socket.onclose = (event: { reason?: string }) => {
+    socket.onclose = (event: { reason?: string; code?: number }) => {
+      console.warn('[PiG Bridge] WebSocket closed from:', this.url, 'code:', event.code, 'reason:', event.reason);
       this.closeEmitter.emit(event.reason || undefined);
     };
   }
@@ -242,8 +187,7 @@ function makeEnvelopeId(): string {
  * Websocket bridge client: connect/disconnect, hello handshake,
  * resync-on-connect (SPEC §8's "resync via fresh fetch, not stream replay"),
  * auto-reconnect with exponential backoff, and typed subscriptions for
- * consumers. Construct with `transport: new MockTransport()` for now; a real
- * `WebSocketTransport` slots in later without changing this class.
+ * consumers.
  */
 export class BridgeClient {
   private readonly transport: BridgeTransport;
@@ -265,6 +209,10 @@ export class BridgeClient {
   private readonly resyncSnapshotEmitter = new Emitter<ResyncSnapshotPayload>();
   private readonly actionResultEmitter = new Emitter<ActionResultPayload>();
   private readonly errorEmitter = new Emitter<BridgeError>();
+  private readonly fsListResultEmitter = new Emitter<FsListResultPayload>();
+  private readonly fsReadResultEmitter = new Emitter<FsReadResultPayload>();
+  private readonly setOpenRouterKeyAckEmitter = new Emitter<SetOpenRouterKeyAckPayload>();
+  private readonly getOpenRouterKeyAckEmitter = new Emitter<GetOpenRouterKeyAckPayload>();
 
   constructor(options: BridgeClientOptions) {
     this.transport = options.transport;
@@ -297,6 +245,7 @@ export class BridgeClient {
   /** Sends a route_input envelope (composer submission). */
   sendRouteInput(payload: RouteInputPayload): string {
     const id = makeEnvelopeId();
+    console.log(`[PiG Bridge] >>> sendRouteInput -> sending prompt to session "${payload.sessionId}": "${payload.text}"`);
     this.transport.send({
       v: 1,
       type: 'route_input',
@@ -334,6 +283,134 @@ export class BridgeClient {
       payload,
     });
     return id;
+  }
+
+  /** Lists files/directories on the VPS filesystem. */
+  async fsList(path?: string): Promise<FsEntry[]> {
+    return new Promise((resolve, reject) => {
+      const id = makeEnvelopeId();
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.fsListResultEmitter.on((result) => {
+        clearTimeout(timer);
+        unsub();
+        if (result.error) {
+          reject(new Error(result.error));
+        } else {
+          resolve(result.entries || []);
+        }
+      });
+      timer = setTimeout(() => {
+        unsub();
+        reject(new Error('fsList request timed out'));
+      }, 10000);
+      this.transport.send({
+        v: 1,
+        type: 'fs_list',
+        id,
+        ts: Date.now(),
+        payload: { path },
+      });
+    });
+  }
+
+  /** Reads file contents from the VPS filesystem. */
+  async fsRead(path: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const id = makeEnvelopeId();
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.fsReadResultEmitter.on((result) => {
+        if (!result.path || result.path === path) {
+          clearTimeout(timer);
+          unsub();
+          if (result.error) {
+            reject(new Error(result.error));
+          } else {
+            resolve(result.content ?? '');
+          }
+        }
+      });
+      timer = setTimeout(() => {
+        unsub();
+        reject(new Error('fsRead request timed out'));
+      }, 10000);
+      this.transport.send({
+        v: 1,
+        type: 'fs_read',
+        id,
+        ts: Date.now(),
+        payload: { path },
+      });
+    });
+  }
+
+  /** Sets the OpenRouter API key on the VPS. */
+  async setOpenRouterKey(apiKey: string): Promise<SetOpenRouterKeyAckPayload> {
+    return new Promise((resolve, reject) => {
+      const id = makeEnvelopeId();
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.setOpenRouterKeyAckEmitter.on((result) => {
+        clearTimeout(timer);
+        unsub();
+        resolve(result);
+      });
+      timer = setTimeout(() => {
+        unsub();
+        reject(new Error('setOpenRouterKey request timed out'));
+      }, 10000);
+      this.transport.send({
+        v: 1,
+        type: 'set_openrouter_key',
+        id,
+        ts: Date.now(),
+        payload: { apiKey },
+      });
+    });
+  }
+
+  /** Gets the current OpenRouter key status from the VPS. */
+  async getOpenRouterKey(): Promise<GetOpenRouterKeyAckPayload> {
+    return new Promise((resolve) => {
+      const id = makeEnvelopeId();
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.getOpenRouterKeyAckEmitter.on((result) => {
+        clearTimeout(timer);
+        unsub();
+        resolve(result);
+      });
+      timer = setTimeout(() => {
+        unsub();
+        resolve({ hasKey: false });
+      }, 5000);
+      this.transport.send({
+        v: 1,
+        type: 'get_openrouter_key',
+        id,
+        ts: Date.now(),
+        payload: {},
+      });
+    });
+  }
+
+  /** Renames a session on the VPS. */
+  async renameSession(oldName: string, newName: string): Promise<ActionResultPayload> {
+    return new Promise((resolve) => {
+      const requestId = this.sendRouteInput({
+        sessionId: oldName,
+        text: `rename session ${oldName} to ${newName}`,
+      });
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.onActionResult((result) => {
+        if (result.requestId === requestId) {
+          clearTimeout(timer);
+          unsub();
+          resolve(result);
+        }
+      });
+      timer = setTimeout(() => {
+        unsub();
+        resolve({ requestId, kind: 'action_executed', summary: `Renamed session to ${newName}` });
+      }, 5000);
+    });
   }
 
   onConnectionStatus(listener: (status: ConnectionStatus) => void): () => void {
@@ -429,6 +506,7 @@ export class BridgeClient {
     switch (envelope.type) {
       case 'hello_ack': {
         const payload = envelope.payload as HelloAckPayload;
+        console.log('[PiG Bridge] <<< hello_ack received! Handshake ok:', payload.ok, 'serverVersion:', payload.serverVersion);
         if (payload.ok) {
           this.setStatus('connected');
           // Resync via fresh fetch, not stream replay (SPEC §8).
@@ -441,23 +519,57 @@ export class BridgeClient {
       }
 
       case 'resync_snapshot': {
-        this.resyncSnapshotEmitter.emit(envelope.payload as ResyncSnapshotPayload);
         const payload = envelope.payload as ResyncSnapshotPayload;
+        console.log(`[PiG Bridge] <<< resync_snapshot received! Found ${payload.sessions.length} sessions on VPS:`, payload.sessions.map((s) => s.name).join(', '));
+        this.resyncSnapshotEmitter.emit(payload);
         this.sessionListUpdateEmitter.emit({ sessions: payload.sessions });
         return;
       }
 
-      case 'session_list_update':
-        this.sessionListUpdateEmitter.emit(envelope.payload as SessionListUpdatePayload);
+      case 'session_list_update': {
+        const payload = envelope.payload as SessionListUpdatePayload;
+        console.log(`[PiG Bridge] <<< session_list_update received: ${payload.sessions.length} sessions.`);
+        this.sessionListUpdateEmitter.emit(payload);
         return;
+      }
 
-      case 'transcript_chunk':
-        this.transcriptChunkEmitter.emit(envelope.payload as TranscriptChunkPayload);
+      case 'transcript_chunk': {
+        const payload = envelope.payload as TranscriptChunkPayload;
+        console.log(`[PiG Bridge] <<< transcript_chunk received for session "${payload.sessionId}" [done: ${payload.done}]: "${payload.message?.content?.slice(-50)}"`);
+        this.transcriptChunkEmitter.emit(payload);
         return;
+      }
 
-      case 'action_result':
-        this.actionResultEmitter.emit(envelope.payload as ActionResultPayload);
+      case 'action_result': {
+        const payload = envelope.payload as ActionResultPayload;
+        console.log(`[PiG Bridge] <<< action_result received: kind=${payload.kind}`);
+        this.actionResultEmitter.emit(payload);
         return;
+      }
+
+      case 'fs_list_result': {
+        const payload = envelope.payload as FsListResultPayload;
+        this.fsListResultEmitter.emit(payload);
+        return;
+      }
+
+      case 'fs_read_result': {
+        const payload = envelope.payload as FsReadResultPayload;
+        this.fsReadResultEmitter.emit(payload);
+        return;
+      }
+
+      case 'set_openrouter_key_ack': {
+        const payload = envelope.payload as SetOpenRouterKeyAckPayload;
+        this.setOpenRouterKeyAckEmitter.emit(payload);
+        return;
+      }
+
+      case 'get_openrouter_key_ack': {
+        const payload = envelope.payload as GetOpenRouterKeyAckPayload;
+        this.getOpenRouterKeyAckEmitter.emit(payload);
+        return;
+      }
 
       case 'error':
         this.errorEmitter.emit(envelope.payload as BridgeError);

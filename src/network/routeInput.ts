@@ -3,18 +3,13 @@
  *
  * Sends a real `route_input` envelope over the shared bridge connection
  * (src/network/bridgeConnection.ts) and awaits the matching `action_result`
- * — against either the mock transport (src/dev/mockBridgeServer.ts) or the
- * real VPS backend (BACKEND_SETUP_PLAN.md), depending on the "use real VPS
- * backend" preference (storage.ts, flipped from Settings) that
- * `bridgeConnection.ts`'s `connectBridge` reads at connect time. Per SPEC §7
+ * against the real VPS backend (BACKEND_SETUP_PLAN.md). Per SPEC §7
  * the OpenRouter key is server-side only — this file never calls OpenRouter
  * directly.
  *
- * Falls back to the same local heuristic keyword-matching this file used to
- * do exclusively (kept below as `classifyLocally`) when there's no bridge
- * client yet (e.g. mid-connection, or `route_input` never resolves — see
- * `ROUTE_INPUT_TIMEOUT_MS`) so the Composer never hangs waiting on a
- * connection that isn't there.
+ * Falls back to local heuristic keyword-matching (kept below as `classifyLocally`)
+ * only when there's no bridge client yet or a network failure/timeout occurs (see
+ * `ROUTE_INPUT_TIMEOUT_MS`) so the Composer never hangs indefinitely.
  */
 
 import type { ComposerAttachment } from '../components/Composer';

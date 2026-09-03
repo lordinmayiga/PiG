@@ -132,7 +132,7 @@ export function verifyAndConsumePairingToken(token: string): boolean {
 
   if (Date.now() > pending.expiresAt) return false;
 
-  issueBridgeToken();
+  validBridgeTokens.add(token);
   return true;
 }
 

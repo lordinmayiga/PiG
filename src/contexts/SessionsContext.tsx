@@ -1,44 +1,19 @@
-/**
- * Live session list, backed by the bridge connection (src/contexts/BridgeContext.tsx)
- * instead of SessionsScreen owning its own `useState(mockSessions)`. This is
- * the "wire Contexts into RootNavigator/screens" integration step
- * PHASE_5_6_PLAN.md left for after A–D landed.
- *
- * ## What's real vs. still local-only
- *
- * - **Session list itself**: real. Seeded from the `mockSessions` fixture for
- *   instant paint (same "cache first, resync after" idea as
- *   `transcriptCache.ts`), then replaced by `resync_snapshot`/
- *   `session_list_update` events off the actual `BridgeClient` — against the
- *   mock transport that's `mockBridgeServer.ts`'s canned list; against the
- *   real transport it's this VPS's actual `tmux` sessions
- *   (BACKEND_SETUP_PLAN.md's `tmux.ts`).
- * - **Kill / create / rename**: still optimistic-local-only, NOT sent as real
- *   `action_confirm`/`route_input` envelopes yet. This is a deliberate scope
- *   cut, not an oversight: the real backend's `actions.ts` `confirmAction`
- *   only accepts an `actionId` that references a *prior* `proposeAction` call
- *   (BACKEND_SETUP_PLAN.md phase 5's confirm state machine) — there's no
- *   wire-level way yet for a structured UI action (the New Session sheet's
- *   form, a swipe-to-kill) to originate that proposal directly, only
- *   free-text `route_input` classification does. Wiring these for real needs
- *   either a new structured envelope type or routing UI actions through
- *   `route_input`'s text classifier — a protocol change worth confirming with
- *   the user rather than guessing silently. Rename has no backend action at
- *   all yet (tmux has no "rename session" concept `actions.ts` implements).
- */
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
-import { mockSessions } from '../fixtures/sessions';
 import type { Session } from '../types';
 import { useBridge } from './BridgeContext';
 
 interface SessionsContextValue {
   sessions: Session[];
-  /** Optimistic local removal — see file header re: not yet a real action_confirm send. */
+  isLoadingSessions: boolean;
+  createSession: (name: string, cwd?: string) => Promise<void>;
+  killSession: (sessionId: string) => Promise<void>;
+  renameSession: (oldName: string, newName: string) => Promise<void>;
+  /** Optimistic local removal */
   removeSessionLocally: (sessionId: string) => void;
-  /** Optimistic local insert — see file header re: not yet a real route_input send. */
+  /** Optimistic local insert */
   addSessionLocally: (session: Session) => void;
-  /** Optimistic local rename — no backend equivalent exists yet at all. */
+  /** Optimistic local rename */
   renameSessionLocally: (sessionId: string, name: string) => void;
   /** Escape hatch for SessionsScreen's `__DEV__`-only "preview empty state"
    * toggle — swaps the whole list rather than mutating one entry. Not meant
@@ -50,20 +25,90 @@ const SessionsContext = createContext<SessionsContextValue | null>(null);
 
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const { client } = useBridge();
-  const [sessions, setSessions] = useState<Session[]>(mockSessions);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [isLoadingSessions, setIsLoadingSessions] = useState<boolean>(true);
 
   useEffect(() => {
-    if (!client) return;
-    const unsubscribeResync = client.onResyncSnapshot((snapshot) => setSessions(snapshot.sessions));
-    const unsubscribeUpdate = client.onSessionListUpdate((update) => setSessions(update.sessions));
+    if (!client) {
+      setIsLoadingSessions(false);
+      return;
+    }
+    setIsLoadingSessions(true);
+    const unsubscribeResync = client.onResyncSnapshot((snapshot) => {
+      setSessions(snapshot.sessions);
+      setIsLoadingSessions(false);
+    });
+    const unsubscribeUpdate = client.onSessionListUpdate((update) => {
+      setSessions(update.sessions);
+      setIsLoadingSessions(false);
+    });
     return () => {
       unsubscribeResync();
       unsubscribeUpdate();
     };
   }, [client]);
 
+  const createSession = useCallback(
+    async (name: string, cwd?: string) => {
+      if (!client) {
+        console.warn('[SessionsContext] No bridge client to create session');
+        return;
+      }
+      const commandText = cwd ? `new session ${name} in ${cwd}` : `new session ${name}`;
+      client.sendRouteInput({
+        sessionId: name,
+        text: commandText,
+      });
+      client.requestResync();
+    },
+    [client],
+  );
+
+  const killSession = useCallback(
+    async (sessionId: string) => {
+      if (!client) {
+        console.warn('[SessionsContext] No bridge client to kill session');
+        return;
+      }
+      const requestId = client.sendRouteInput({
+        sessionId,
+        text: `kill session ${sessionId}`,
+      });
+      const unsub = client.onActionResult((result) => {
+        if (result.requestId === requestId) {
+          unsub();
+          if (result.kind === 'action_pending_confirm') {
+            client.sendActionConfirm({ actionId: result.requestId, confirmed: true }, sessionId);
+            client.requestResync();
+          }
+        }
+      });
+      setTimeout(() => {
+        unsub();
+        client.requestResync();
+      }, 1000);
+    },
+    [client],
+  );
+
+  const renameSession = useCallback(
+    async (oldName: string, newName: string) => {
+      if (!client) {
+        console.warn('[SessionsContext] No bridge client to rename session');
+        return;
+      }
+      await client.renameSession(oldName, newName);
+      client.requestResync();
+    },
+    [client],
+  );
+
   const value: SessionsContextValue = {
     sessions,
+    isLoadingSessions,
+    createSession,
+    killSession,
+    renameSession,
     removeSessionLocally: (sessionId) => setSessions((prev) => prev.filter((s) => s.id !== sessionId)),
     addSessionLocally: (session) => setSessions((prev) => [session, ...prev]),
     renameSessionLocally: (sessionId, name) =>

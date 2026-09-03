@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -8,6 +8,7 @@ import { Mic, Plus, Send, X } from 'lucide-react-native';
 import { Icon, useTheme } from '../theme';
 import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
 import { sendRouteInput, classifyLocally, type RouteInputAction } from '../network/routeInput';
+import { getBridgeClient } from '../network/bridgeConnection';
 import type { FileAttachment } from '../types';
 
 export interface ComposerAttachment extends FileAttachment {
@@ -131,7 +132,7 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
     }
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!canSend) return;
     const submittedText = text.trim();
     const submittedAttachments = attachments;
@@ -140,30 +141,42 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
     setText('');
     setAttachments([]);
 
-    // Check locally for environment commands (kill, new session, switch, cd).
-    const local = classifyLocally(submittedText, submittedAttachments);
-    if (local.kind === 'action') {
-      if (local.requiresConfirm) {
-        Alert.alert(local.action.summary || 'Confirm action', 'This action cannot be undone.', [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Confirm',
-            style: 'destructive',
-            onPress: () => runAction(local.action, submittedText, submittedAttachments),
-          },
-        ]);
-      } else {
-        runAction(local.action, submittedText, submittedAttachments);
+    try {
+      const result = await sendRouteInput(submittedText, submittedAttachments, sessionId ?? '');
+      if (result.kind === 'action') {
+        if (result.requiresConfirm) {
+          Alert.alert(result.action.summary || 'Confirm action', 'This action cannot be undone.', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Confirm',
+              style: 'destructive',
+              onPress: () => {
+                const client = getBridgeClient();
+                const actionId = result.action.params?.actionId as string | undefined;
+                if (client && actionId) {
+                  client.sendActionConfirm({ actionId, confirmed: true }, sessionId);
+                }
+                runAction(result.action, submittedText, submittedAttachments);
+              },
+            },
+          ]);
+        } else {
+          runAction(result.action, submittedText, submittedAttachments);
+        }
+        return;
       }
-      return;
+
+      // Normal prompt: post to the screen
+      onSend(result.cleanedText || submittedText, submittedAttachments);
+    } catch (err) {
+      console.error('[Composer] Failed to route input:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to send input';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(errorMessage);
+      } else {
+        Alert.alert('Error', errorMessage);
+      }
     }
-
-    // Normal prompt: post to the screen immediately so the user bubble
-    // and typing indicator appear with zero delay!
-    onSend(submittedText, submittedAttachments);
-
-    // Also dispatch route_input asynchronously over the bridge in the background
-    void sendRouteInput(submittedText, submittedAttachments, sessionId ?? '').catch(() => {});
   };
 
   return (

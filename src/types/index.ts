@@ -71,12 +71,9 @@ export interface OpenRouterSettings {
   keySuffix?: string;
 }
 
-// --- Bridge protocol types (Phase 6) ---
+// --- Bridge protocol types ---
 // Wire format for the app <-> VPS backend websocket bridge, per
-// PHASE_5_6_PLAN.md's "proposed decision: websocket wire format" and
-// SPEC.md §4/§8. One envelope shape both directions; `payload` narrows by
-// `type`. Not yet confirmed with the real backend (which doesn't exist
-// yet) — see src/dev/mockBridgeServer.ts for the current stand-in.
+// SPEC.md §4/§8. One envelope shape both directions; `payload` narrows by `type`.
 
 /** Every message sent or received over the bridge websocket has this shape. */
 export interface Envelope<TPayload = unknown> {
@@ -97,7 +94,11 @@ export type AppToBackendEventType =
   | 'resync_request'
   | 'route_input'
   | 'action_confirm'
-  | 'ping';
+  | 'ping'
+  | 'fs_list'
+  | 'fs_read'
+  | 'set_openrouter_key'
+  | 'get_openrouter_key';
 
 /** Events the backend sends to the app. */
 export type BackendToAppEventType =
@@ -107,7 +108,11 @@ export type BackendToAppEventType =
   | 'transcript_chunk'
   | 'action_result'
   | 'error'
-  | 'pong';
+  | 'pong'
+  | 'fs_list_result'
+  | 'fs_read_result'
+  | 'set_openrouter_key_ack'
+  | 'get_openrouter_key_ack';
 
 export type BridgeEventType = AppToBackendEventType | BackendToAppEventType;
 
@@ -193,3 +198,56 @@ export interface BridgeError {
 
 /** backend -> app: keepalive reply. */
 export type PongPayload = Record<string, never>;
+
+/** app -> backend: list files/directories on the VPS filesystem. */
+export interface FsListPayload {
+  path?: string;
+}
+
+export interface FsEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'folder';
+  sizeBytes?: number;
+  mimeType?: string;
+}
+
+/** backend -> app: results of listing a directory on the VPS filesystem. */
+export interface FsListResultPayload {
+  path: string;
+  entries: FsEntry[];
+  error?: string;
+}
+
+/** app -> backend: read file contents from the VPS filesystem. */
+export interface FsReadPayload {
+  path: string;
+}
+
+/** backend -> app: file content from the VPS filesystem. */
+export interface FsReadResultPayload {
+  path: string;
+  content?: string;
+  error?: string;
+}
+
+/** app -> backend: save OpenRouter API key on VPS. */
+export interface SetOpenRouterKeyPayload {
+  apiKey: string;
+}
+
+/** backend -> app: save OpenRouter API key response. */
+export interface SetOpenRouterKeyAckPayload {
+  ok: boolean;
+  keySuffix?: string;
+  error?: string;
+}
+
+/** app -> backend: get current OpenRouter settings. */
+export type GetOpenRouterKeyPayload = Record<string, never>;
+
+/** backend -> app: get current OpenRouter settings response. */
+export interface GetOpenRouterKeyAckPayload {
+  hasKey: boolean;
+  keySuffix?: string;
+}

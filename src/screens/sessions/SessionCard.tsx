@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Animated, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import ReanimatedAnimated from 'react-native-reanimated';
 import { EllipsisVertical, Rocket, SquareTerminal, Trash2 } from 'lucide-react-native';
 
@@ -141,7 +141,7 @@ export default function SessionCard({
           <Pressable
             onPress={handleCardPress}
             onLongPress={() => onOpenMenu(session)}
-            accessibilityRole="button"
+            accessibilityRole={Platform.OS === 'web' ? undefined : 'button'}
             accessibilityLabel={`${session.name}, ${agent.label}, ${statusLabel[session.status]}`}
             {...pressProps}
           >

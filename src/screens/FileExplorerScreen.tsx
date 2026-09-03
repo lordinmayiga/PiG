@@ -8,9 +8,9 @@ import { ChevronLeft, File, FileText, Folder, FolderOpen, Image as ImageIcon } f
 
 import { Icon, useTheme } from '../theme';
 import { useFolderTraverseSlide } from '../theme/motion';
+import { useBridge } from '../contexts/BridgeContext';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
 import type { FileNode } from '../types';
-import { mockFileContents, mockFileTree } from '../fixtures/files';
 import { FileViewerSheet, type ViewableFile } from '../components/FileViewerSheet';
 
 type Nav = NativeStackNavigationProp<SessionsStackParamList, 'FileExplorer'>;
@@ -57,8 +57,10 @@ export default function FileExplorerScreen() {
   const { colors, spacing, typeScale, minTouchTarget } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
+  const { client } = useBridge();
   const [currentPath, setCurrentPath] = useState('');
   const [navDirection, setNavDirection] = useState<'forward' | 'back'>('forward');
+  const [fsEntries, setFsEntries] = useState<FileNode[]>([]);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
   const traverseStyle = useFolderTraverseSlide(currentPath, navDirection);
@@ -66,6 +68,33 @@ export default function FileExplorerScreen() {
   const breadcrumbScrollRef = useRef<ScrollView>(null);
   const breadcrumbLayouts = useRef<Record<string, { x: number; width: number }>>({});
   const breadcrumbViewportWidth = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!client) {
+      setFsEntries([]);
+      return;
+    }
+    client
+      .fsList(currentPath || undefined)
+      .then((list) => {
+        if (cancelled) return;
+        const nodes: FileNode[] = list.map((e) => ({
+          name: e.name,
+          path: e.path,
+          type: e.type,
+          sizeBytes: e.sizeBytes,
+          mimeType: e.mimeType,
+        }));
+        setFsEntries(nodes);
+      })
+      .catch(() => {
+        if (!cancelled) setFsEntries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, currentPath]);
 
   /** Navigate to `path`, inferring forward/back from the depth change for the slide direction. */
   const navigateTo = useCallback(
@@ -77,12 +106,11 @@ export default function FileExplorerScreen() {
   );
 
   const entries = useMemo(() => {
-    const children = mockFileTree.filter((node) => parentPath(node.path) === currentPath);
-    return [...children].sort((a, b) => {
+    return [...fsEntries].sort((a, b) => {
       if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-  }, [currentPath]);
+  }, [fsEntries]);
 
   const breadcrumbs = useMemo(() => {
     const segments = currentPath ? currentPath.split('/') : [];
@@ -96,7 +124,7 @@ export default function FileExplorerScreen() {
   }, [currentPath]);
 
   const handlePress = useCallback(
-    (node: FileNode) => {
+    async (node: FileNode) => {
       if (node.type === 'folder') {
         navigateTo(node.path);
         return;
@@ -109,9 +137,22 @@ export default function FileExplorerScreen() {
         mimeType: node.mimeType,
         sizeBytes: node.sizeBytes,
       });
-      setViewerContent(kind === 'text' ? mockFileContents[node.path] : undefined);
+      if (kind === 'text') {
+        if (client) {
+          try {
+            const content = await client.fsRead(node.path);
+            setViewerContent(content);
+          } catch {
+            setViewerContent(undefined);
+          }
+        } else {
+          setViewerContent(undefined);
+        }
+      } else {
+        setViewerContent(undefined);
+      }
     },
-    [navigateTo],
+    [client, navigateTo],
   );
 
   const closeViewer = useCallback(() => {

@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { loadBridgeCredentials, saveBridgeCredentials } from '../secureStorage';
+import { saveBridgeCredentials } from '../secureStorage';
 import { saveOpenRouterKey } from '../storage';
 import { useTheme } from '../theme';
 import { useCrossFade } from '../theme/motion';
@@ -11,12 +11,8 @@ import ConnectStep from './setup/ConnectStep';
 import ConnectingStep from './setup/ConnectingStep';
 import ResultStep from './setup/ResultStep';
 import OpenRouterStep from './setup/OpenRouterStep';
-import { emptyConnectForm, resolveOutcome, type ConnectFormState, type ConnectMode, type ConnectOutcome, type SetupStep } from './setup/types';
-
-/** Simulated pairing round-trip latency (no real network — Phase 6 wires the real one). */
-const MOCK_CONNECT_DELAY_MS = 1500;
-/** How long the checkmark-ack state holds on screen before handing off to ResultStep. */
-const CONNECT_ACK_HOLD_MS = 420;
+import { emptyConnectForm, type ConnectFormState, type ConnectOutcome, type SetupStep } from './setup/types';
+import { BridgeClient, WebSocketTransport, bridgeUrlFromHost } from '../network/bridgeClient';
 
 interface SetupScreenProps {
   /**
@@ -34,20 +30,21 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
   const insets = useSafeAreaInsets();
 
   const [step, setStep] = useState<SetupStep>('connect');
-  const [mode, setMode] = useState<ConnectMode>('scan');
   const [form, setForm] = useState<ConnectFormState>(emptyConnectForm);
   const [tokenPanelExpanded, setTokenPanelExpanded] = useState(false);
   const [forcedOutcome, setForcedOutcome] = useState<ConnectOutcome | null>(null);
   const [outcome, setOutcome] = useState<ConnectOutcome>('success');
   const [connectAck, setConnectAck] = useState(false);
 
-  const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeClientRef = useRef<BridgeClient | null>(null);
+  const timeoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
-      if (connectTimer.current) clearTimeout(connectTimer.current);
-      if (ackTimer.current) clearTimeout(ackTimer.current);
+      if (timeoutTimerRef.current) clearTimeout(timeoutTimerRef.current);
+      if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
+      activeClientRef.current?.disconnect();
     };
   }, []);
 
@@ -62,41 +59,105 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
     if (hasValidOverride && overrideForm) {
       setForm(overrideForm);
     }
+
+    const host = (activeForm.host ?? '').trim();
+    const token = (activeForm.token ?? '').trim();
+
+    if (!host || !token) {
+      setOutcome('unreachable');
+      setStep('error');
+      return;
+    }
+
+    console.log('[PiG Setup] handleSubmit with host:', host, 'forcedOutcome:', forcedOutcome);
     setStep('connecting');
     setConnectAck(false);
-    const resolved = resolveOutcome(activeForm, forcedOutcome);
-    connectTimer.current = setTimeout(async () => {
-      if (resolved === 'success') {
-        // Persist bridge credentials. Fallback to mock values if empty (e.g. forced success in dev)
-        const hostToSave = (activeForm.host ?? '').trim() || '198.51.100.23:8443';
-        const tokenToSave = (activeForm.token ?? '').trim() || 'a1b2c3d4e5f6';
-        await saveBridgeCredentials({ host: hostToSave, token: tokenToSave });
-      }
-      setOutcome(resolved);
-      if (resolved === 'success') {
-        // Briefly show the checkmark bounce acknowledging the handshake before handing off to ResultStep.
+
+    if (forcedOutcome) {
+      setOutcome(forcedOutcome);
+      if (forcedOutcome === 'success') {
+        void saveBridgeCredentials({ host, token });
         setConnectAck(true);
-        ackTimer.current = setTimeout(() => {
+        ackTimerRef.current = setTimeout(() => {
           setStep('success');
           setConnectAck(false);
-        }, CONNECT_ACK_HOLD_MS);
+        }, 420);
       } else {
         setStep('error');
       }
-    }, MOCK_CONNECT_DELAY_MS);
+      return;
+    }
+
+    // Connect using real BridgeClient
+    activeClientRef.current?.disconnect();
+    let client: BridgeClient;
+    try {
+      const transport = new WebSocketTransport(bridgeUrlFromHost(host));
+      client = new BridgeClient({ transport, token });
+      activeClientRef.current = client;
+    } catch {
+      setOutcome('unreachable');
+      setStep('error');
+      return;
+    }
+
+    let settled = false;
+    const finish = (resultOutcome: ConnectOutcome) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimerRef.current) {
+        clearTimeout(timeoutTimerRef.current);
+        timeoutTimerRef.current = null;
+      }
+      unsubStatus();
+      unsubError();
+      client.disconnect();
+      activeClientRef.current = null;
+
+      console.log('[PiG Setup] Connection outcome resolved:', resultOutcome);
+      setOutcome(resultOutcome);
+      if (resultOutcome === 'success') {
+        console.log('[PiG Setup] Saving bridge credentials to storage:', { host, token });
+        void saveBridgeCredentials({ host, token });
+        setConnectAck(true);
+        ackTimerRef.current = setTimeout(() => {
+          setStep('success');
+          setConnectAck(false);
+        }, 420);
+      } else {
+        setStep('error');
+      }
+    };
+
+    const unsubStatus = client.onConnectionStatus((status) => {
+      if (status === 'connected') {
+        finish('success');
+      }
+    });
+
+    const unsubError = client.onError((err) => {
+      if (err.code === 'bad_token') {
+        finish('invalid-token');
+      } else if (err.code === 'timeout') {
+        finish('timeout');
+      } else {
+        finish('unreachable');
+      }
+    });
+
+    timeoutTimerRef.current = setTimeout(() => {
+      finish('timeout');
+    }, 10000);
+
+    client.connect();
   };
 
   const handleOpenRouterDone = async (apiKey: string | undefined) => {
+    console.log('[PiG Setup] handleOpenRouterDone called. API key provided:', Boolean(apiKey));
     if (apiKey?.trim()) {
       await saveOpenRouterKey(apiKey.trim());
     }
-    // Ensure credentials exist before signaling completion
-    const current = await loadBridgeCredentials();
-    if (!current) {
-      const hostToSave = form.host.trim() || '198.51.100.23:8443';
-      const tokenToSave = form.token.trim() || 'a1b2c3d4e5f6';
-      await saveBridgeCredentials({ host: hostToSave, token: tokenToSave });
-    }
+    console.log('[PiG Setup] Calling onSetupComplete(). Transitioning to Tabs...');
     onSetupComplete();
   };
 
@@ -128,8 +189,6 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
         <Animated.View style={[{ width: '100%', maxWidth: 420, alignSelf: 'center' }, crossFadeStyle]}>
           {step === 'connect' && (
             <ConnectStep
-              mode={mode}
-              onModeChange={setMode}
               form={form}
               onFormChange={setForm}
               tokenPanelExpanded={tokenPanelExpanded}
@@ -166,3 +225,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 });
+

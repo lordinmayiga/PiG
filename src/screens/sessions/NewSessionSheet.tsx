@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -6,7 +6,7 @@ import { Rocket, SquareTerminal } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../../theme';
 import { useSheetMotion } from '../../theme/motion';
-import { mockRecentFolders } from '../../fixtures/folders';
+import { useBridge } from '../../contexts/BridgeContext';
 import type { AgentKind } from '../../types';
 
 const agentOptions: { kind: AgentKind; label: string; icon: typeof SquareTerminal }[] = [
@@ -35,12 +35,35 @@ export interface NewSessionSheetProps {
 export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessionSheetProps) {
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
   const insets = useSafeAreaInsets();
+  const { client } = useBridge();
   const { mounted, backdropStyle, sheetStyle } = useSheetMotion(visible);
 
   const [agent, setAgent] = useState<AgentKind>('claude-code');
   const [folder, setFolder] = useState('');
   const [name, setName] = useState('');
   const [nameTouched, setNameTouched] = useState(false);
+  const [recentFolders, setRecentFolders] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!visible || !client) return;
+    let cancelled = false;
+    client
+      .fsList('/root/projects')
+      .catch(() => client.fsList('/root'))
+      .then((entries) => {
+        if (cancelled) return;
+        const folders = entries
+          .filter((e) => e.type === 'folder')
+          .map((e) => e.path);
+        if (folders.length > 0) {
+          setRecentFolders(folders);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, client]);
 
   // Reset the draft each time the sheet transitions from closed to open —
   // React's "adjusting state when a prop changes" pattern (setState during
@@ -160,7 +183,7 @@ export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessi
           ]}
         />
 
-        {mockRecentFolders.length > 0 && (
+        {recentFolders.length > 0 && (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -168,7 +191,7 @@ export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessi
             style={{ marginTop: spacing.xs }}
             contentContainerStyle={styles.chipRow}
           >
-            {mockRecentFolders.map((path) => (
+            {recentFolders.map((path) => (
               <Pressable
                 key={path}
                 onPress={() => handlePickFolder(path)}

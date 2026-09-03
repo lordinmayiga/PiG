@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -8,7 +8,6 @@ import { Plus } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
 import { useScaleIn, usePressScale } from '../theme/motion';
-import { mockSessions, emptySessions } from '../fixtures/sessions';
 import { useSessions } from '../contexts/SessionsContext';
 import type { Session } from '../types';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
@@ -17,31 +16,34 @@ import NewSessionSheet, { type NewSessionDraft } from './sessions/NewSessionShee
 import RenameSessionSheet from './sessions/RenameSessionSheet';
 import SessionActionMenu from './sessions/SessionActionMenu';
 
-// DEV VIEW DEFAULT: starts from `mockSessions` (the populated list) since
-// that's the more useful default for building/reviewing the card list and
-// its interactions. The genuine empty state (SPEC.md §3.7's handoff from
-// Setup) is reachable via the "Preview empty state" dev toggle below, or
-// naturally once every mock session has been killed.
-const DEV_START_FROM_EMPTY = false;
-
-let nextSessionSeq = 1;
+const DEV_DUMMY_SESSIONS: Session[] = [
+  {
+    id: 'dev-sample-1',
+    name: 'api-refactor',
+    agent: 'claude-code',
+    folder: '/root/projects/api',
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
+    lastMessagePreview: 'Refactored auth endpoints.',
+  },
+];
 
 export default function SessionsScreen() {
   const { colors, spacing, radius, typeScale, minTouchTarget, screenMargin } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<SessionsStackParamList, 'Sessions'>>();
 
-  const { sessions, removeSessionLocally, addSessionLocally, renameSessionLocally, setSessionsLocally } =
-    useSessions();
-  // DEV_START_FROM_EMPTY only matters on first mount, since SessionsContext
-  // already seeds from mockSessions itself — apply it once here rather than
-  // duplicating the seed value in two places. A brief mockSessions flash
-  // before this effect runs is an acceptable trade for not touching
-  // another component's state during render.
-  useEffect(() => {
-    if (DEV_START_FROM_EMPTY) setSessionsLocally(emptySessions);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally once-only, see comment above
-  }, []);
+  const {
+    sessions,
+    createSession,
+    killSession,
+    renameSession: renameSessionBridge,
+    removeSessionLocally,
+    renameSessionLocally,
+    setSessionsLocally,
+  } = useSessions();
+
   const [isNewSessionVisible, setNewSessionVisible] = useState(false);
   const [menuSession, setMenuSession] = useState<Session | null>(null);
   const [renameSession, setRenameSession] = useState<Session | null>(null);
@@ -58,6 +60,12 @@ export default function SessionsScreen() {
   };
 
   const requestKill = (session: Session) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      if (window.confirm('Kill this session? This stops the agent and closes the session. Anything not saved elsewhere will be lost.')) {
+        setKillingSessionId(session.id);
+      }
+      return;
+    }
     Alert.alert('Kill this session?', 'This stops the agent and closes the session. Anything not saved elsewhere will be lost.', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -70,6 +78,7 @@ export default function SessionsScreen() {
 
   const handleKillAnimationComplete = (sessionId: string) => {
     removeSessionLocally(sessionId);
+    void killSession(sessionId);
     setKillingSessionId((current) => (current === sessionId ? null : current));
   };
 
@@ -85,24 +94,14 @@ export default function SessionsScreen() {
 
   const handleRenameSave = (session: Session, newName: string) => {
     renameSessionLocally(session.id, newName);
+    void renameSessionBridge(session.id, newName);
     setRenameSession(null);
   };
 
   const handleCreateSession = (draft: NewSessionDraft) => {
-    const now = new Date().toISOString();
-    const newSession: Session = {
-      id: `sess-new-${nextSessionSeq++}`,
-      name: draft.name,
-      agent: draft.agent,
-      folder: draft.folder,
-      status: 'active',
-      createdAt: now,
-      lastActivityAt: now,
-      lastMessagePreview: 'Session started — no messages yet.',
-    };
-    addSessionLocally(newSession);
     setNewSessionVisible(false);
-    openTranscript(newSession);
+    void createSession(draft.name, draft.folder);
+    navigation.navigate('Transcript', { sessionId: draft.name });
   };
 
   const isEmpty = sessions.length === 0;
@@ -113,7 +112,7 @@ export default function SessionsScreen() {
         <Text style={[typeScale.title, { color: colors.ink }]}>Sessions</Text>
         {__DEV__ && (
           <Pressable
-            onPress={() => setSessionsLocally(sessions.length === 0 ? mockSessions : emptySessions)}
+            onPress={() => setSessionsLocally(sessions.length === 0 ? DEV_DUMMY_SESSIONS : [])}
             accessibilityRole="button"
             accessibilityLabel="Toggle empty state preview"
           >

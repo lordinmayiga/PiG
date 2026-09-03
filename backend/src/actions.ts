@@ -57,7 +57,7 @@ const PENDING_ACTION_TTL_MS = 5 * 60 * 1000;
 
 export type PendingAction = {
   id: string;
-  kind: 'kill_session' | 'create_session' | 'switch_session' | 'cd';
+  kind: 'kill_session' | 'create_session' | 'switch_session' | 'cd' | 'rename_session';
   sessionId?: string;
   details: Record<string, unknown>;
 };
@@ -268,6 +268,27 @@ export async function executeNonDestructiveAction(
       };
     }
 
+    case 'rename_session': {
+      const oldName = typeof details.oldName === 'string'
+        ? details.oldName
+        : resolveSessionName(sessionId, details);
+      const newName =
+        typeof details.newName === 'string'
+          ? details.newName
+          : typeof details.name === 'string'
+          ? details.name
+          : undefined;
+      if (!oldName || !newName) {
+        throw new Error('rename_session: old name and new name are both required');
+      }
+      await execFileAsync('tmux', ['rename-session', '-t', oldName, newName]);
+      return {
+        requestId,
+        kind: 'action_executed',
+        summary: `Renamed session "${oldName}" to "${newName}".`,
+      };
+    }
+
     case 'kill_session':
       // Never reached: kill_session always goes through the
       // propose/confirm path, never this immediate-execute helper.
@@ -276,9 +297,9 @@ export async function executeNonDestructiveAction(
 }
 
 function resolveSessionName(sessionId: string | undefined, details: Record<string, unknown>): string | undefined {
+  if (typeof details.name === 'string' && details.name.trim().length > 0) return details.name.trim();
+  if (typeof details.sessionId === 'string' && details.sessionId.trim().length > 0) return details.sessionId.trim();
   if (sessionId) return sessionId;
-  if (typeof details.name === 'string') return details.name;
-  if (typeof details.sessionId === 'string') return details.sessionId;
   return undefined;
 }
 
@@ -287,6 +308,8 @@ function summarizeNonDestructive(kind: PendingAction['kind'], sessionId: string 
   switch (kind) {
     case 'create_session':
       return `Creating session "${name}"...`;
+    case 'rename_session':
+      return `Renaming session "${name}"...`;
     case 'switch_session':
       return `Switching to session "${name}"...`;
     case 'cd':

@@ -62,6 +62,7 @@
  */
 
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -109,13 +110,27 @@ const execFileAsync = promisify(execFile);
  */
 function resolveAgentCommand(agent: AgentKind, prompt: string): { bin: string; args: string[] } {
   switch (agent) {
-    case 'claude-code':
+    case 'claude-code': {
+      const bin = existsSync('/usr/bin/claude')
+        ? '/usr/bin/claude'
+        : existsSync('/usr/local/bin/claude')
+          ? '/usr/local/bin/claude'
+          : 'claude';
       return {
-        bin: 'claude',
+        bin,
         args: ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', prompt],
       };
-    case 'antigravity':
-      return { bin: 'agy', args: ['--output-format', 'stream-json', `--print=${prompt}`] };
+    }
+    case 'antigravity': {
+      const bin = existsSync('/root/.local/bin/agy')
+        ? '/root/.local/bin/agy'
+        : existsSync('/usr/local/bin/agy')
+          ? '/usr/local/bin/agy'
+          : existsSync('/usr/bin/agy')
+            ? '/usr/bin/agy'
+            : 'agy';
+      return { bin, args: ['--output-format', 'stream-json', `--print=${prompt}`] };
+    }
   }
 }
 
@@ -150,6 +165,10 @@ export function spawnAgentInTmuxWindow(opts: SpawnAgentOptions): SpawnedAgentHan
   const child: ChildProcessWithoutNullStreams = spawn(bin, args, {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      PATH: `/root/.local/bin:/usr/local/bin:${process.env.PATH || ''}`,
+    },
   });
   // `claude --print` takes its prompt as an argv entry (see
   // resolveAgentCommand), not stdin — but an open, never-written stdin pipe

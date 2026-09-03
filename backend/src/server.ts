@@ -39,13 +39,19 @@ import type {
   TranscriptChunkPayload,
   TranscriptMessage,
   BridgeError,
+  FsListPayload,
+  FsReadPayload,
+  SetOpenRouterKeyPayload,
+  GetOpenRouterKeyPayload,
 } from '../../src/types/index.js';
 import { listTmuxSessions } from './tmux.js';
 import { isValidBridgeToken, verifyAndConsumePairingToken } from './auth.js';
-import { classify, routeInput } from './routeInput.js';
-import { proposeAction, confirmAction } from './actions.js';
+import { routeInput } from './routeInput.js';
+import { confirmAction } from './actions.js';
 import { spawnAgentInTmuxWindow } from './agentProcess.js';
 import { getOrCreateSession, appendTurn, getTranscript, setActiveHandle } from './sessionRegistry.js';
+import { listDirectory, readFileContent } from './files.js';
+import { saveOpenRouterKey, getOpenRouterKeySettings } from './openrouterConfig.js';
 
 const PORT = Number(process.env.PIG_BRIDGE_PORT ?? 8787);
 
@@ -85,6 +91,7 @@ async function handleHello(ws: WebSocket, envelope: Envelope<HelloPayload>): Pro
     return;
   }
   authedSockets.add(ws);
+  console.log(`[pig-bridge] Client authenticated successfully with token: ${token.slice(0, 10)}... (active clients: ${authedSockets.size})`);
   send(ws, 'hello_ack', { ok: true, serverVersion: '0.1.0' }, undefined, envelope.id);
 }
 
@@ -106,16 +113,7 @@ async function handleResyncRequest(ws: WebSocket, envelope: Envelope<ResyncReque
   send(ws, 'resync_snapshot', payload, envelope.sessionId, envelope.id);
 }
 
-/** classify()'s action.type strings ('new_session', ...) predate actions.ts
- * and don't quite match its PendingAction['kind'] union ('create_session',
- * ...) since the two modules were built in parallel — bridge the naming
- * here rather than change either module's already-settled vocabulary. */
-const ACTION_TYPE_TO_KIND: Record<string, 'kill_session' | 'create_session' | 'switch_session' | 'cd'> = {
-  kill_session: 'kill_session',
-  new_session: 'create_session',
-  switch_session: 'switch_session',
-  cd: 'cd',
-};
+
 
 /**
  * Broadcasts a `transcript_chunk` to every authed socket (not just the
@@ -155,6 +153,7 @@ async function spawnAndStreamTurn(sessionId: string, prompt: string): Promise<vo
   }
 
   const ctx = getOrCreateSession(sessionId, tmuxSession.folder, tmuxSession.agent);
+  console.log(`[pig-bridge] >>> Spawning agent (${ctx.agent}) in "${ctx.cwd}" for prompt: "${prompt}"`);
 
   const userMessage: TranscriptMessage = {
     id: randomUUID(),
@@ -171,6 +170,7 @@ async function spawnAndStreamTurn(sessionId: string, prompt: string): Promise<vo
     agent: ctx.agent,
     prompt,
     onChunk: (chunk) => {
+      console.log(`[pig-bridge] <<< Agent chunk for session "${sessionId}" [done: ${chunk.done}]: "${chunk.message.content.slice(-40)}"`);
       appendTurn(sessionId, chunk.message);
       broadcastTranscriptChunk(chunk);
       if (chunk.done) {
@@ -178,6 +178,7 @@ async function spawnAndStreamTurn(sessionId: string, prompt: string): Promise<vo
       }
     },
     onExit: (code) => {
+      console.log(`[pig-bridge] Agent subprocess exited with code ${code} for session "${sessionId}"`);
       if (code !== 0) {
         console.error(`[pig-bridge] agent process for session "${sessionId}" exited with code ${code}`);
       }
@@ -189,21 +190,9 @@ async function spawnAndStreamTurn(sessionId: string, prompt: string): Promise<vo
 
 async function handleRouteInput(ws: WebSocket, envelope: Envelope<RouteInputPayload>): Promise<void> {
   const { text, sessionId } = envelope.payload;
-  const classified = classify(text);
+  console.log(`[pig-bridge] >>> Inbound route_input received from client for session "${sessionId}": "${text}"`);
 
-  let result: ActionResultPayload;
-  if (classified.kind === 'action') {
-    const kind = ACTION_TYPE_TO_KIND[classified.action.type];
-    if (kind) {
-      result = proposeAction(kind, sessionId, classified.action.params ?? {});
-    } else {
-      // Unknown action.type — fall back to treating it as a prompt rather
-      // than silently dropping the submission.
-      result = await routeInput(envelope.payload, envelope.id);
-    }
-  } else {
-    result = await routeInput(envelope.payload, envelope.id);
-  }
+  const result = await routeInput(envelope.payload, envelope.id);
   send(ws, 'action_result', result, envelope.sessionId, envelope.id);
 
   // Side effect, not part of the response above: a successfully-routed
@@ -226,6 +215,26 @@ function handlePing(ws: WebSocket, envelope: Envelope<Record<string, never>>): v
   send(ws, 'pong', {}, envelope.sessionId, envelope.id);
 }
 
+async function handleFsList(ws: WebSocket, envelope: Envelope<FsListPayload>): Promise<void> {
+  const result = await listDirectory(envelope.payload?.path);
+  send(ws, 'fs_list_result', result, envelope.sessionId, envelope.id);
+}
+
+async function handleFsRead(ws: WebSocket, envelope: Envelope<FsReadPayload>): Promise<void> {
+  const result = await readFileContent(envelope.payload.path);
+  send(ws, 'fs_read_result', result, envelope.sessionId, envelope.id);
+}
+
+async function handleSetOpenRouterKey(ws: WebSocket, envelope: Envelope<SetOpenRouterKeyPayload>): Promise<void> {
+  const result = saveOpenRouterKey(envelope.payload?.apiKey);
+  send(ws, 'set_openrouter_key_ack', result, envelope.sessionId, envelope.id);
+}
+
+async function handleGetOpenRouterKey(ws: WebSocket, envelope: Envelope<GetOpenRouterKeyPayload>): Promise<void> {
+  const result = getOpenRouterKeySettings();
+  send(ws, 'get_openrouter_key_ack', result, envelope.sessionId, envelope.id);
+}
+
 async function routeEnvelope(ws: WebSocket, envelope: Envelope): Promise<void> {
   if (envelope.type !== 'hello' && !authedSockets.has(ws)) {
     sendError(ws, 'bad_token', 'Send hello first.', envelope.id);
@@ -242,6 +251,14 @@ async function routeEnvelope(ws: WebSocket, envelope: Envelope): Promise<void> {
       return handleActionConfirm(ws, envelope as Envelope<ActionConfirmPayload>);
     case 'ping':
       return void handlePing(ws, envelope as Envelope<Record<string, never>>);
+    case 'fs_list':
+      return handleFsList(ws, envelope as Envelope<FsListPayload>);
+    case 'fs_read':
+      return handleFsRead(ws, envelope as Envelope<FsReadPayload>);
+    case 'set_openrouter_key':
+      return handleSetOpenRouterKey(ws, envelope as Envelope<SetOpenRouterKeyPayload>);
+    case 'get_openrouter_key':
+      return handleGetOpenRouterKey(ws, envelope as Envelope<GetOpenRouterKeyPayload>);
     default:
       sendError(ws, 'internal', `Unhandled envelope type: ${envelope.type}`, envelope.id);
   }

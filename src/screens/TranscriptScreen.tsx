@@ -21,8 +21,6 @@ import { useFadeSlideIn } from '../theme/motion';
 import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
 import type { FileAttachment, TranscriptMessage } from '../types';
-import { mockTranscript, mockStreamingReply } from '../fixtures/transcripts';
-import { mockFileContents } from '../fixtures/files';
 import { getCached, appendAndPersist, replaceAll } from '../transcriptCache';
 import { useBridge } from '../contexts/BridgeContext';
 import { useSessions } from '../contexts/SessionsContext';
@@ -58,7 +56,7 @@ function attachmentToViewable(attachment: FileAttachment): ViewableFile {
   };
 }
 
-let nextMessageId = 1000;
+let nextMessageId = Date.now();
 
 const STARTER_PROMPTS = [
   '🔎 Explain this project',
@@ -146,7 +144,6 @@ export default function TranscriptScreen() {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
-  const streamTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const { client } = useBridge();
   // Track B placeholder-swap fix (REAL_AGENT_CONNECTION_PLAN.md §3a.1): the
   // optimistic local `agentReply` bubble appended in `handleSend` has a
@@ -185,21 +182,10 @@ export default function TranscriptScreen() {
   // Read-through the transcript cache (src/transcriptCache.ts) on mount —
   // instant paint from whatever's cached, per PHASE_5_6_PLAN.md's storage
   // schema ("render cache immediately, then send resync_request").
-  //
-  // DEV FALLBACK: if the cache is empty AND there's no bridge client to
-  // resync against (e.g. real-backend preference on with nothing paired), seed
-  // from the fixture transcript so the screen isn't blank in that
-  // configuration. Once a client exists, `resync_snapshot` below is the
-  // real source of truth and overwrites whatever was seeded/cached.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      let cached = await getCached(sessionId);
-      if (!cached && !client && sessionId === 'sess-1') {
-        // Dev-only seed for the initial sample session, no-client case only.
-        await appendAndPersist(sessionId, mockTranscript);
-        cached = await getCached(sessionId);
-      }
+      const cached = await getCached(sessionId);
       if (!cancelled) {
         setMessages(cached?.messages ?? []);
       }
@@ -207,7 +193,7 @@ export default function TranscriptScreen() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, client]);
+  }, [sessionId]);
 
   // Real resync + live streaming, once a bridge client exists (BridgeContext
   // only provides one once paired — see RootNavigator). `resync_snapshot`
@@ -235,6 +221,7 @@ export default function TranscriptScreen() {
 
     const unsubscribeChunk = client.onTranscriptChunk((chunk) => {
       if (chunk.sessionId !== sessionId) return;
+      console.log(`[PiG Chat] Received chunk from agent for "${sessionId}" (done: ${chunk.done}, status: ${chunk.message.status}): "${chunk.message.content.slice(-60)}"`);
       setMessages((prev) => {
         const pendingPlaceholderId = pendingPlaceholderIdRef.current[sessionId];
         let next: TranscriptMessage[];
@@ -267,43 +254,31 @@ export default function TranscriptScreen() {
     };
   }, [client, sessionId]);
 
-  const openAttachment = useCallback((attachment: FileAttachment) => {
-    setViewerFile(attachmentToViewable(attachment));
-    setViewerContent(attachment.kind === 'text' ? mockFileContents[attachment.path] : undefined);
-  }, []);
+  const openAttachment = useCallback(
+    async (attachment: FileAttachment) => {
+      setViewerFile(attachmentToViewable(attachment));
+      if (attachment.kind === 'text') {
+        if (client) {
+          try {
+            const content = await client.fsRead(attachment.path);
+            setViewerContent(content);
+          } catch {
+            setViewerContent(undefined);
+          }
+        } else {
+          setViewerContent(undefined);
+        }
+      } else {
+        setViewerContent(undefined);
+      }
+    },
+    [client],
+  );
 
   const closeViewer = useCallback(() => {
     setViewerFile(null);
     setViewerContent(undefined);
   }, []);
-
-  const streamAgentReply = useCallback(
-    (replyId: string) => {
-      const words = mockStreamingReply.split(' ');
-      let i = 0;
-      streamTimer.current = setInterval(() => {
-        i += 3;
-        const chunk = words.slice(0, i).join(' ');
-        const done = i >= words.length;
-        setMessages((prev) => {
-          const next = prev.map((m) =>
-            m.id === replyId ? { ...m, content: chunk, status: done ? ('done' as const) : ('streaming' as const) } : m,
-          );
-          // Re-sync the cache once the streamed reply settles — until Phase
-          // 6's real client lands, this is the only place turn content
-          // changes after it was first appended, so a plain append would
-          // leave a stale (empty) copy of this message cached.
-          if (done) void replaceAll(sessionId, next);
-          return next;
-        });
-        if (done && streamTimer.current) {
-          clearInterval(streamTimer.current);
-          streamTimer.current = null;
-        }
-      }, 120);
-    },
-    [sessionId],
-  );
 
   const handleSend = useCallback(
     (text: string, attachments: ComposerAttachment[]) => {
@@ -315,34 +290,30 @@ export default function TranscriptScreen() {
         attachments: attachments.length > 0 ? attachments : undefined,
       };
       const replyId = `local-msg-${nextMessageId++}`;
+      const isConnected = Boolean(client && client.getStatus() === 'connected');
       const agentReply: TranscriptMessage = {
         id: replyId,
         role: 'agent',
         timestamp: new Date().toISOString(),
-        status: 'streaming',
-        content: '',
+        status: isConnected ? 'streaming' : 'error',
+        content: isConnected ? '' : 'Disconnected from VPS. Reconnect to send messages.',
       };
+      console.log(`[PiG Chat] User clicked Send for session "${sessionId}": "${text}" (attachments: ${attachments.length}, isConnected: ${isConnected})`);
       isNearBottomRef.current = true;
       setMessages((prev) => [...prev, userMessage, agentReply]);
       void appendAndPersist(sessionId, [userMessage, agentReply]);
-      if (client) {
-        // Real backend path (§3a.1/§4 Track B): the placeholder bubble
-        // above is replaced in place once the first real `transcript_chunk`
-        // for this turn arrives — see `pendingPlaceholderIdRef` and the
-        // `onTranscriptChunk` handler above.
+      if (isConnected && client) {
+        console.log(`[PiG Chat] Routing message to bridge WebSocket client: "${text}"`);
         pendingPlaceholderIdRef.current[sessionId] = replyId;
         client.sendRouteInput({
           sessionId,
           text,
           attachmentIds: attachments.map((a) => a.id),
         });
-      } else {
-        // No-backend dev/demo fallback only.
-        streamAgentReply(replyId);
       }
       setTimeout(() => scrollToBottom(true), 50);
     },
-    [sessionId, client, streamAgentReply, scrollToBottom],
+    [sessionId, client, scrollToBottom],
   );
 
   const renderEmptyTranscript = () => {

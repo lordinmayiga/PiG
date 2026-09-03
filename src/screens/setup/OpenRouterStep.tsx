@@ -29,6 +29,7 @@ export default function OpenRouterStep({ onDone, savedHost }: OpenRouterStepProp
   }, []);
 
   const handleFinish = async (key: string | undefined) => {
+    console.log('[PiG Button] OpenRouterStep finish clicked, apiKey:', key ? 'provided' : 'skipped (undefined)');
     setIsSubmitting(true);
     try {
       await onDone(key);

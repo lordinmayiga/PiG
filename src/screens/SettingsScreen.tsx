@@ -5,9 +5,9 @@ import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { SettingsRow } from '../components/SettingsRow';
-import { mockOpenRouterSettings } from '../fixtures/settings';
 import { clearBridgeCredentials, loadBridgeCredentials, type BridgeCredentials } from '../secureStorage';
-import { loadOpenRouterSettings, loadUseRealBackend, saveOpenRouterKey, saveUseRealBackend } from '../storage';
+import { loadOpenRouterSettings, saveOpenRouterKey } from '../storage';
+import { useBridge } from '../contexts/BridgeContext';
 import { Icon, useTheme, useThemeMode, type ThemePreference } from '../theme';
 import { usePressScale } from '../theme/motion';
 import type { OpenRouterSettings } from '../types';
@@ -40,50 +40,54 @@ const APPEARANCE_OPTIONS: { value: ThemePreference; label: string; icon: typeof 
 export default function SettingsScreen() {
   const { colors, spacing, radius, typeScale, screenMargin, maxFontScale, minTouchTarget } = useTheme();
   const { preference, setPreference } = useThemeMode();
+  const { client } = useBridge();
 
   // null = still loading from secure storage; the safe fallback if the read
   // fails is "not paired" (see secureStorage.ts), same as everywhere else.
   const [credentials, setCredentials] = useState<BridgeCredentials | null>(null);
-  const [openRouter, setOpenRouter] = useState<OpenRouterSettings>(mockOpenRouterSettings);
+  const [openRouter, setOpenRouter] = useState<OpenRouterSettings>({ hasKey: false });
   const [requireUnlock, setRequireUnlock] = useState(false);
-  // Dev toggle (PHASE_7_REAL_BACKEND_PLAN.md step 1): real VPS backend vs.
-  // in-process mock. Read once from storage, applied at next BridgeContext
-  // connect (see bridgeConnection.ts) — flipping it doesn't live-swap the
-  // active connection, hence the restart prompt in handleToggleRealBackend.
-  const [useRealBackend, setUseRealBackend] = useState(false);
 
   useEffect(() => {
     loadBridgeCredentials().then(setCredentials);
-    loadUseRealBackend().then(setUseRealBackend);
     loadOpenRouterSettings().then((saved) => {
       if (saved.hasKey) {
         setOpenRouter(saved);
       }
     });
-  }, []);
-
-  const handleToggleRealBackend = (value: boolean) => {
-    setUseRealBackend(value);
-    void saveUseRealBackend(value);
-    Alert.alert(
-      'Restart required',
-      value
-        ? 'Close and reopen PiG to connect to your VPS backend.'
-        : 'Close and reopen PiG to switch back to the mock backend.',
-    );
-  };
+    if (client) {
+      client.getOpenRouterKey().then((res) => {
+        if (res.hasKey) {
+          setOpenRouter({ hasKey: true, keySuffix: res.keySuffix });
+        }
+      }).catch(() => {});
+    }
+  }, [client]);
 
   const handleDisconnect = () => {
+    console.log('[PiG Settings] "Disconnect" button clicked');
+    const performDisconnect = async () => {
+      console.log('[PiG Settings] Clearing bridge credentials and disconnecting...');
+      await clearBridgeCredentials();
+      setCredentials(null);
+      // RootNavigator listens for this change and swaps back to Setup
+      // on its own — no direct navigation call needed here.
+    };
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      if (window.confirm("Disconnect from VPS? You'll need to pair again to reconnect.")) {
+        void performDisconnect();
+      }
+      return;
+    }
+
     Alert.alert('Disconnect from VPS?', "You'll need to pair again to reconnect.", [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Disconnect',
         style: 'destructive',
-        onPress: async () => {
-          await clearBridgeCredentials();
-          setCredentials(null);
-          // RootNavigator listens for this change and swaps back to Setup
-          // on its own — no direct navigation call needed here.
+        onPress: () => {
+          void performDisconnect();
         },
       },
     ]);
@@ -113,19 +117,21 @@ export default function SettingsScreen() {
   const saveKeyEdit = () => {
     const trimmed = keyDraft.trim();
     if (!trimmed) {
-      // Native Alert.alert — the OS renders and animates this dialog itself,
-      // so it can't carry the custom damped scale transition (pig-motion
-      // Phase 5) without replacing it with a fully custom modal. The
-      // disconnect confirmation below (handleDisconnect) is native
-      // Alert.alert too, for the same reason — skipped here rather than
-      // rebuilt as a bespoke modal.
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert('Paste a key before saving, or cancel.');
+        return;
+      }
       Alert.alert('Key required', 'Paste a key before saving, or cancel.');
       return;
     }
-    // Mock: a real save would POST the plaintext key to the VPS backend and
-    // only ever get a masked suffix back. Nothing but that suffix is kept.
-    setOpenRouter({ hasKey: true, keySuffix: trimmed.slice(-4) });
+    const suffix = trimmed.slice(-4);
+    setOpenRouter({ hasKey: true, keySuffix: suffix });
     void saveOpenRouterKey(trimmed);
+    if (client) {
+      client.setOpenRouterKey(trimmed).catch((err) => {
+        console.error('[PiG Settings] Failed to save OpenRouter key to backend:', err);
+      });
+    }
     setKeyDraft('');
     setIsEditingKey(false);
   };
@@ -194,25 +200,6 @@ export default function SettingsScreen() {
           {credentials ? (
             <SettingsRow icon={LogOut} label="Disconnect" onPress={handleDisconnect} />
           ) : null}
-          <SettingsRow
-            icon={Server}
-            label="Use real VPS backend"
-            trailing={
-              <Switch
-                value={useRealBackend}
-                onValueChange={handleToggleRealBackend}
-                trackColor={{ false: colors.border, true: colors.accent }}
-                thumbColor={colors.onAccent}
-                accessibilityLabel="Use real VPS backend"
-              />
-            }
-          />
-          <Text
-            maxFontSizeMultiplier={maxFontScale}
-            style={[typeScale.caption, { color: colors.inkSecondary, paddingBottom: spacing.sm }]}
-          >
-            Dev toggle — off talks to the in-app mock, on connects to the paired VPS. Takes effect on next restart.
-          </Text>
         </View>
 
         <SectionHeader label="OpenRouter" />
