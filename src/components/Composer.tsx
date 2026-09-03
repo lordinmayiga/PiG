@@ -7,7 +7,7 @@ import { Mic, Plus, Send, X } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
 import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
-import { sendRouteInput, type RouteInputAction } from '../network/routeInput';
+import { sendRouteInput, classifyLocally, type RouteInputAction } from '../network/routeInput';
 import type { FileAttachment } from '../types';
 
 export interface ComposerAttachment extends FileAttachment {
@@ -136,38 +136,34 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
     const submittedText = text.trim();
     const submittedAttachments = attachments;
     // Clear the composer immediately — routing happens against a snapshot
-    // of what was submitted, per SPEC §3/§6 (no network calls while typing,
-    // only on submit).
+    // of what was submitted, per SPEC §3/§6.
     setText('');
     setAttachments([]);
 
-    sendRouteInput(submittedText, submittedAttachments, sessionId ?? '')
-      .then((result) => {
-        if (result.kind === 'prompt') {
-          onSend(result.cleanedText, submittedAttachments);
-          return;
-        }
+    // Check locally for environment commands (kill, new session, switch, cd).
+    const local = classifyLocally(submittedText, submittedAttachments);
+    if (local.kind === 'action') {
+      if (local.requiresConfirm) {
+        Alert.alert(local.action.summary || 'Confirm action', 'This action cannot be undone.', [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Confirm',
+            style: 'destructive',
+            onPress: () => runAction(local.action, submittedText, submittedAttachments),
+          },
+        ]);
+      } else {
+        runAction(local.action, submittedText, submittedAttachments);
+      }
+      return;
+    }
 
-        // Environment command. Destructive actions always require a confirm
-        // step before executing — SPEC §6.
-        if (result.requiresConfirm) {
-          Alert.alert(result.action.summary || 'Confirm action', 'This action cannot be undone.', [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Confirm',
-              style: 'destructive',
-              onPress: () => runAction(result.action, submittedText, submittedAttachments),
-            },
-          ]);
-        } else {
-          runAction(result.action, submittedText, submittedAttachments);
-        }
-      })
-      .catch(() => {
-        // Mock call shouldn't reject, but don't let a submission vanish if
-        // classification fails once this is a real network call.
-        onSend(submittedText, submittedAttachments);
-      });
+    // Normal prompt: post to the screen immediately so the user bubble
+    // and typing indicator appear with zero delay!
+    onSend(submittedText, submittedAttachments);
+
+    // Also dispatch route_input asynchronously over the bridge in the background
+    void sendRouteInput(submittedText, submittedAttachments, sessionId ?? '').catch(() => {});
   };
 
   return (

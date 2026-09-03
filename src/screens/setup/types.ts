@@ -30,11 +30,11 @@ export const emptyConnectForm: ConnectFormState = { host: '', token: '' };
  * an empty/short/"expired"/"bad" token → invalid-token error; a host
  * containing "timeout" → timeout error; anything else → success.
  */
-export function resolveOutcome(form: ConnectFormState, forced: ConnectOutcome | null): ConnectOutcome {
+export function resolveOutcome(form?: Partial<ConnectFormState> | null, forced?: ConnectOutcome | null): ConnectOutcome {
   if (forced) return forced;
 
-  const host = form.host.trim().toLowerCase();
-  const token = form.token.trim().toLowerCase();
+  const host = typeof form?.host === 'string' ? form.host.trim().toLowerCase() : '';
+  const token = typeof form?.token === 'string' ? form.token.trim().toLowerCase() : '';
 
   if (!host || host.includes('bad') || host.includes('unreachable')) return 'unreachable';
   if (host.includes('timeout') || host.includes('slow')) return 'timeout';

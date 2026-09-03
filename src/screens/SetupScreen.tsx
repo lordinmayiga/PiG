@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { saveBridgeCredentials } from '../secureStorage';
+import { loadBridgeCredentials, saveBridgeCredentials } from '../secureStorage';
+import { saveOpenRouterKey } from '../storage';
 import { useTheme } from '../theme';
 import ConnectStep from './setup/ConnectStep';
 import ConnectingStep from './setup/ConnectingStep';
@@ -43,21 +44,43 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
     };
   }, []);
 
-  const handleSubmit = () => {
+  const handleSubmit = (overrideForm?: ConnectFormState) => {
+    const hasValidOverride = Boolean(
+      overrideForm &&
+      typeof overrideForm === 'object' &&
+      typeof overrideForm.host === 'string' &&
+      typeof overrideForm.token === 'string'
+    );
+    const activeForm = hasValidOverride && overrideForm ? overrideForm : form;
+    if (hasValidOverride && overrideForm) {
+      setForm(overrideForm);
+    }
     setStep('connecting');
-    const resolved = resolveOutcome(form, forcedOutcome);
-    connectTimer.current = setTimeout(() => {
+    const resolved = resolveOutcome(activeForm, forcedOutcome);
+    connectTimer.current = setTimeout(async () => {
       if (resolved === 'success') {
-        // No real handshake yet (Phase 6) — but the pairing "succeeded" per
-        // the mock outcome, so persist what the user typed as if it were
-        // the bridge-issued credentials. Fire-and-forget: a failed write is
-        // best-effort (see secureStorage.ts) and just leaves Setup showing
-        // again next launch, the safe fallback.
-        saveBridgeCredentials({ host: form.host.trim(), token: form.token.trim() });
+        // Persist bridge credentials. Fallback to mock values if empty (e.g. forced success in dev)
+        const hostToSave = (activeForm.host ?? '').trim() || '198.51.100.23:8443';
+        const tokenToSave = (activeForm.token ?? '').trim() || 'a1b2c3d4e5f6';
+        await saveBridgeCredentials({ host: hostToSave, token: tokenToSave });
       }
       setOutcome(resolved);
       setStep(resolved === 'success' ? 'success' : 'error');
     }, MOCK_CONNECT_DELAY_MS);
+  };
+
+  const handleOpenRouterDone = async (apiKey: string | undefined) => {
+    if (apiKey?.trim()) {
+      await saveOpenRouterKey(apiKey.trim());
+    }
+    // Ensure credentials exist before signaling completion
+    const current = await loadBridgeCredentials();
+    if (!current) {
+      const hostToSave = form.host.trim() || '198.51.100.23:8443';
+      const tokenToSave = form.token.trim() || 'a1b2c3d4e5f6';
+      await saveBridgeCredentials({ host: hostToSave, token: tokenToSave });
+    }
+    onSetupComplete();
   };
 
   const handleTryAgain = () => {
@@ -108,7 +131,9 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
             />
           )}
 
-          {step === 'openrouter' && <OpenRouterStep onDone={() => onSetupComplete()} />}
+          {step === 'openrouter' && (
+            <OpenRouterStep savedHost={form.host.trim()} onDone={handleOpenRouterDone} />
+          )}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

@@ -1,18 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  FlatList,
+  KeyboardAvoidingView,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
-import { ChevronLeft, FolderOpen } from 'lucide-react-native';
+import { ChevronLeft, FolderOpen, Rocket, SquareTerminal } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
+import { useFadeSlideIn } from '../theme/motion';
+import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
 import type { FileAttachment, TranscriptMessage } from '../types';
 import { mockTranscript, mockStreamingReply } from '../fixtures/transcripts';
 import { mockFileContents } from '../fixtures/files';
 import { getCached, appendAndPersist, replaceAll } from '../transcriptCache';
 import { useBridge } from '../contexts/BridgeContext';
+import { useSessions } from '../contexts/SessionsContext';
 import { AgentStatusDot } from '../components/AgentStatusDot';
 import { MarkdownBody } from '../components/MarkdownBody';
 import { FileAttachmentChip } from '../components/FileAttachmentChip';
@@ -47,17 +60,120 @@ function attachmentToViewable(attachment: FileAttachment): ViewableFile {
 
 let nextMessageId = 1000;
 
+const STARTER_PROMPTS = [
+  '🔎 Explain this project',
+  '📜 Summarize recent git commits',
+  '🧪 Run test suite',
+  '🛠️ What tasks are open?',
+];
+
+interface TranscriptRowProps {
+  item: TranscriptMessage;
+  onOpenAttachment: (attachment: FileAttachment) => void;
+}
+
+function TranscriptRow({ item, onOpenAttachment }: TranscriptRowProps) {
+  const { colors, spacing, typeScale } = useTheme();
+  const animatedStyle = useFadeSlideIn();
+
+  if (item.role === 'user') {
+    return (
+      <Animated.View style={[styles.userRow, { paddingHorizontal: spacing.md, marginBottom: spacing.md }, animatedStyle]}>
+        <View
+          style={[
+            styles.userBubble,
+            { backgroundColor: colors.accent, borderRadius: 18, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
+          ]}
+        >
+          <Text style={[typeScale.body, { color: colors.onAccent }]} maxFontSizeMultiplier={1.3}>
+            {item.content}
+          </Text>
+        </View>
+        {item.attachments && item.attachments.length > 0 ? (
+          <View style={[styles.attachmentsWrap, { gap: spacing.xxs, marginTop: spacing.xxs }]}>
+            {item.attachments.map((attachment) => (
+              <FileAttachmentChip key={attachment.id} attachment={attachment} onPress={onOpenAttachment} />
+            ))}
+          </View>
+        ) : null}
+        <Text style={[typeScale.caption, { color: colors.inkSecondary, marginTop: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
+          {relativeTime(item.timestamp)}
+        </Text>
+      </Animated.View>
+    );
+  }
+
+  const status = item.status ?? 'done';
+  return (
+    <Animated.View style={[styles.agentTurn, { paddingHorizontal: spacing.md, marginBottom: spacing.lg }, animatedStyle]}>
+      <View style={[styles.turnHeader, { marginBottom: spacing.xs }]}>
+        <Text style={[typeScale.subheading, { color: colors.ink }]} maxFontSizeMultiplier={1.3}>
+          Agent
+        </Text>
+        <AgentStatusDot status={status} />
+        <Text style={[typeScale.caption, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
+          {relativeTime(item.timestamp)}
+        </Text>
+      </View>
+      {status === 'error' ? (
+        <Text style={[typeScale.body, { color: colors.destructive }]} maxFontSizeMultiplier={1.3}>
+          {item.content}
+        </Text>
+      ) : status === 'streaming' && item.content.trim() === '' ? (
+        <TypingIndicator />
+      ) : (
+        <MarkdownBody content={item.content} />
+      )}
+      {item.attachments && item.attachments.length > 0 ? (
+        <View style={[styles.attachmentsWrap, { gap: spacing.xxs, marginTop: spacing.sm }]}>
+          {item.attachments.map((attachment) => (
+            <FileAttachmentChip key={attachment.id} attachment={attachment} onPress={onOpenAttachment} />
+          ))}
+        </View>
+      ) : null}
+    </Animated.View>
+  );
+}
+
 export default function TranscriptScreen() {
-  const { colors, spacing, typeScale, minTouchTarget } = useTheme();
+  const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
   const navigation = useNavigation<Nav>();
   const route = useRoute<TranscriptRoute>();
   const { sessionId } = route.params;
   const insets = useSafeAreaInsets();
+  const { sessions } = useSessions();
+  const session = sessions.find((s) => s.id === sessionId);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
   const streamTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const { client } = useBridge();
+
+  const flatListRef = useRef<FlatList<TranscriptMessage>>(null);
+  const isNearBottomRef = useRef(true);
+  const keyboardVisible = useKeyboardVisible();
+
+  const scrollToBottom = useCallback((animated = true) => {
+    flatListRef.current?.scrollToEnd({ animated });
+  }, []);
+
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent;
+    const distanceToBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    isNearBottomRef.current = distanceToBottom < 80;
+  }, []);
+
+  useEffect(() => {
+    if (keyboardVisible && isNearBottomRef.current) {
+      scrollToBottom(true);
+    }
+  }, [keyboardVisible, scrollToBottom]);
+
+  const handleContentSizeChange = useCallback(() => {
+    if (isNearBottomRef.current) {
+      scrollToBottom(true);
+    }
+  }, [scrollToBottom]);
 
   // Read-through the transcript cache (src/transcriptCache.ts) on mount —
   // instant paint from whatever's cached, per PHASE_5_6_PLAN.md's storage
@@ -72,8 +188,8 @@ export default function TranscriptScreen() {
     let cancelled = false;
     (async () => {
       let cached = await getCached(sessionId);
-      if (!cached && !client) {
-        // Dev-only seed, no-client case only — see comment above.
+      if (!cached && !client && sessionId === 'sess-1') {
+        // Dev-only seed for the initial sample session, no-client case only.
         await appendAndPersist(sessionId, mockTranscript);
         cached = await getCached(sessionId);
       }
@@ -184,75 +300,99 @@ export default function TranscriptScreen() {
         status: 'streaming',
         content: '',
       };
+      isNearBottomRef.current = true;
       setMessages((prev) => [...prev, userMessage, agentReply]);
       void appendAndPersist(sessionId, [userMessage, agentReply]);
       streamAgentReply(replyId);
+      setTimeout(() => scrollToBottom(true), 50);
     },
-    [sessionId, streamAgentReply],
+    [sessionId, streamAgentReply, scrollToBottom],
   );
 
-  const renderItem = useCallback(
-    ({ item }: { item: TranscriptMessage }) => {
-      if (item.role === 'user') {
-        return (
-          <View style={[styles.userRow, { paddingHorizontal: spacing.md, marginBottom: spacing.md }]}>
-            <View
-              style={[
-                styles.userBubble,
-                { backgroundColor: colors.accent, borderRadius: 18, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
-              ]}
-            >
-              <Text style={[typeScale.body, { color: colors.onAccent }]} maxFontSizeMultiplier={1.3}>
-                {item.content}
+  const renderEmptyTranscript = () => {
+    const agentKind = session?.agent ?? 'claude-code';
+    const AgentIcon = agentKind === 'antigravity' ? Rocket : SquareTerminal;
+    const agentLabel = agentKind === 'antigravity' ? 'Antigravity' : 'Claude Code';
+    const folder = session?.folder || '/root/projects/PiG';
+
+    return (
+      <View style={[styles.emptyContainer, { paddingHorizontal: spacing.md, paddingTop: spacing.md }]}>
+        <View
+          style={[
+            styles.agentHeaderCard,
+            {
+              backgroundColor: colors.card,
+              borderColor: colors.border,
+              borderRadius: radius.card,
+              padding: spacing.md,
+            },
+          ]}
+        >
+          <View style={styles.agentCardTop}>
+            <View style={[styles.agentIconWrap, { backgroundColor: colors.canvas, borderRadius: radius.chip }]}>
+              <Icon icon={AgentIcon} size={24} color={colors.accent} />
+            </View>
+            <View style={styles.agentCardMeta}>
+              <View style={styles.agentTitleRow}>
+                <Text style={[typeScale.subheading, { color: colors.ink }]} maxFontSizeMultiplier={1.3}>
+                  {agentLabel}
+                </Text>
+                <View style={styles.readyBadge}>
+                  <View style={[styles.readyDot, { backgroundColor: colors.idleDot }]} />
+                  <Text style={[typeScale.label, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
+                    Ready
+                  </Text>
+                </View>
+              </View>
+              <Text
+                style={[typeScale.caption, { color: colors.inkSecondary, marginTop: spacing.xxs }]}
+                numberOfLines={1}
+                maxFontSizeMultiplier={1.3}
+              >
+                {folder}
               </Text>
             </View>
-            {item.attachments && item.attachments.length > 0 ? (
-              <View style={[styles.attachmentsWrap, { gap: spacing.xxs, marginTop: spacing.xxs }]}>
-                {item.attachments.map((attachment) => (
-                  <FileAttachmentChip key={attachment.id} attachment={attachment} onPress={openAttachment} />
-                ))}
-              </View>
-            ) : null}
-            <Text style={[typeScale.caption, { color: colors.inkSecondary, marginTop: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
-              {relativeTime(item.timestamp)}
-            </Text>
           </View>
-        );
-      }
-
-      const status = item.status ?? 'done';
-      return (
-        <View style={[styles.agentTurn, { paddingHorizontal: spacing.md, marginBottom: spacing.lg }]}>
-          <View style={[styles.turnHeader, { marginBottom: spacing.xs }]}>
-            <Text style={[typeScale.subheading, { color: colors.ink }]} maxFontSizeMultiplier={1.3}>
-              Agent
-            </Text>
-            <AgentStatusDot status={status} />
-            <Text style={[typeScale.caption, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
-              {relativeTime(item.timestamp)}
-            </Text>
-          </View>
-          {status === 'error' ? (
-            <Text style={[typeScale.body, { color: colors.destructive }]} maxFontSizeMultiplier={1.3}>
-              {item.content}
-            </Text>
-          ) : status === 'streaming' && item.content.trim() === '' ? (
-            <TypingIndicator />
-          ) : (
-            <MarkdownBody content={item.content} />
-          )}
-          {item.attachments && item.attachments.length > 0 ? (
-            <View style={[styles.attachmentsWrap, { gap: spacing.xxs, marginTop: spacing.sm }]}>
-              {item.attachments.map((attachment) => (
-                <FileAttachmentChip key={attachment.id} attachment={attachment} onPress={openAttachment} />
-              ))}
-            </View>
-          ) : null}
         </View>
-      );
-    },
-    [colors, spacing, typeScale, openAttachment],
-  );
+
+        <Text
+          style={[
+            typeScale.body,
+            { color: colors.inkSecondary, textAlign: 'center', marginTop: spacing.xl, marginBottom: spacing.md },
+          ]}
+          maxFontSizeMultiplier={1.3}
+        >
+          Ready to work. Tap a starter prompt above or message the agent below.
+        </Text>
+
+        <View style={[styles.chipsContainer, { gap: spacing.sm }]}>
+          {STARTER_PROMPTS.map((prompt) => (
+            <Pressable
+              key={prompt}
+              onPress={() => handleSend(prompt, [])}
+              accessibilityRole="button"
+              accessibilityLabel={prompt}
+              style={[
+                styles.promptChip,
+                {
+                  backgroundColor: colors.card,
+                  borderColor: colors.border,
+                  borderRadius: radius.chip,
+                  minHeight: minTouchTarget,
+                  paddingHorizontal: spacing.md,
+                  paddingVertical: spacing.sm,
+                },
+              ]}
+            >
+              <Text style={[typeScale.bodyMedium, { color: colors.ink }]} maxFontSizeMultiplier={1.3}>
+                {prompt}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+    );
+  };
 
   return (
     <KeyboardAvoidingView
@@ -274,7 +414,7 @@ export default function TranscriptScreen() {
           <Icon icon={ChevronLeft} size={24} color={colors.ink} />
         </Pressable>
         <Text style={[typeScale.heading, { color: colors.ink, flex: 1 }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
-          PiG app build
+          {session?.name ?? 'PiG app build'}
         </Text>
         <Pressable
           onPress={() => navigation.navigate('FileExplorer')}
@@ -287,11 +427,16 @@ export default function TranscriptScreen() {
       </View>
 
       <FlatList
+        ref={flatListRef}
         data={messages}
         keyExtractor={(item) => item.id}
-        renderItem={renderItem}
-        contentContainerStyle={{ paddingVertical: spacing.md }}
+        renderItem={({ item }) => <TranscriptRow item={item} onOpenAttachment={openAttachment} />}
+        ListEmptyComponent={renderEmptyTranscript}
+        contentContainerStyle={{ flexGrow: 1, paddingVertical: spacing.md }}
         keyboardShouldPersistTaps="handled"
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
+        onContentSizeChange={handleContentSizeChange}
       />
 
       <Composer sessionId={sessionId} onSend={handleSend} />
@@ -337,5 +482,47 @@ const styles = StyleSheet.create({
   attachmentsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+  },
+  emptyContainer: {
+    flex: 1,
+  },
+  agentHeaderCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  agentCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  agentIconWrap: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  agentCardMeta: {
+    flex: 1,
+  },
+  agentTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  readyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  readyDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  chipsContainer: {
+    width: '100%',
+  },
+  promptChip: {
+    borderWidth: StyleSheet.hairlineWidth,
+    justifyContent: 'center',
   },
 });

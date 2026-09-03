@@ -148,10 +148,26 @@ export default function FileExplorerScreen() {
         keyExtractor={(item) => item.path}
         contentContainerStyle={{ paddingTop: spacing.xs, paddingBottom: spacing.xs + insets.bottom }}
         ListEmptyComponent={
-          <View style={[styles.emptyState, { padding: spacing.lg }]}>
-            <Text style={[typeScale.body, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
-              This folder is empty.
+          <View style={[styles.emptyState, { padding: spacing.xl, alignItems: 'center' }]}>
+            <Icon icon={FolderOpen} size={32} color={colors.inkSecondary} />
+            <Text
+              style={[typeScale.heading, { color: colors.ink, marginTop: spacing.sm, textAlign: 'center' }]}
+              maxFontSizeMultiplier={1.3}
+            >
+              This folder is empty
             </Text>
+            {currentPath.length > 0 && (
+              <Pressable
+                onPress={() => setCurrentPath(parentPath(currentPath))}
+                accessibilityRole="button"
+                accessibilityLabel="Back to parent folder"
+                style={{ marginTop: spacing.md, minHeight: minTouchTarget, justifyContent: 'center' }}
+              >
+                <Text style={[typeScale.bodyMedium, { color: colors.accent }]} maxFontSizeMultiplier={1.3}>
+                  ← Back to parent folder
+                </Text>
+              </Pressable>
+            )}
           </View>
         }
         renderItem={({ item }) => (

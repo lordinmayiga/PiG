@@ -58,7 +58,7 @@ const ROUTE_INPUT_TIMEOUT_MS = 5000;
  * accepted (and forwarded as attachment refs in the real envelope, per SPEC
  * §6.1) but this local heuristic doesn't use it.
  */
-function classifyLocally(text: string, attachments: ComposerAttachment[] = []): RouteInputResult {
+export function classifyLocally(text: string, attachments: ComposerAttachment[] = []): RouteInputResult {
   void attachments;
   const trimmed = text.trim();
 

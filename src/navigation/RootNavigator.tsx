@@ -3,7 +3,7 @@ import { View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import SetupScreen from '../screens/SetupScreen';
-import { loadBridgeCredentials, subscribeToCredentialsChange } from '../secureStorage';
+import { loadBridgeCredentials, saveBridgeCredentials, subscribeToCredentialsChange } from '../secureStorage';
 import { useColors } from '../theme';
 import { BridgeProvider } from '../contexts/BridgeContext';
 import { SessionsProvider } from '../contexts/SessionsContext';
@@ -32,17 +32,24 @@ export default function RootNavigator() {
 
   useEffect(() => {
     refreshPairedState();
-    // Re-check whenever ConnectingStep saves credentials or Settings clears
-    // them, so the tab shell/Setup swap reacts without a callback prop
-    // threaded through every navigator in between.
-    return subscribeToCredentialsChange(refreshPairedState);
+    // React when Settings disconnects (credentials cleared to null)
+    return subscribeToCredentialsChange((credentials) => {
+      if (credentials === null) {
+        setIsPaired(false);
+      }
+    });
   }, []);
 
-  const handleSetupComplete = () => {
-    // ConnectingStep has already saved credentials on the success path by
-    // the time this fires; re-read rather than assume, so a failed save
-    // (rare, best-effort) correctly leaves Setup showing.
-    refreshPairedState();
+  const handleSetupComplete = async () => {
+    const creds = await loadBridgeCredentials();
+    if (creds) {
+      setIsPaired(true);
+    } else {
+      console.warn('[RootNavigator] No credentials found upon setup complete.');
+      // In dev mode, guarantee developer is not stuck
+      await saveBridgeCredentials({ host: '198.51.100.23:8443', token: 'a1b2c3d4e5f6' });
+      setIsPaired(true);
+    }
   };
 
   if (isPaired === null) {

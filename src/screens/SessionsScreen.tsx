@@ -88,6 +88,7 @@ export default function SessionsScreen() {
     };
     addSessionLocally(newSession);
     setNewSessionVisible(false);
+    openTranscript(newSession);
   };
 
   const isEmpty = sessions.length === 0;
@@ -111,8 +112,14 @@ export default function SessionsScreen() {
 
       {isEmpty ? (
         <View style={[styles.emptyState, { paddingHorizontal: screenMargin }]}>
-          <Text style={[typeScale.heading, { color: colors.ink, textAlign: 'center' }]}>
-            No sessions yet — tap + to start your first session.
+          <Text style={[typeScale.heading, { color: colors.ink, textAlign: 'center' }]} maxFontSizeMultiplier={1.3}>
+            No sessions yet
+          </Text>
+          <Text
+            style={[typeScale.body, { color: colors.inkSecondary, textAlign: 'center', marginTop: spacing.xs }]}
+            maxFontSizeMultiplier={1.3}
+          >
+            Start one to begin working with an agent on your VPS.
           </Text>
           <Pressable
             onPress={() => setNewSessionVisible(true)}
@@ -129,8 +136,19 @@ export default function SessionsScreen() {
               },
             ]}
           >
-            <Text style={[typeScale.bodyMedium, { color: colors.onAccent }]}>New session</Text>
+            <Text style={[typeScale.bodyMedium, { color: colors.onAccent }]} maxFontSizeMultiplier={1.3}>
+              New session
+            </Text>
           </Pressable>
+          <Text
+            style={[
+              typeScale.caption,
+              { color: colors.inkPlaceholder, textAlign: 'center', marginTop: spacing.md, maxWidth: 280 },
+            ]}
+            maxFontSizeMultiplier={1.3}
+          >
+            Sessions persist in tmux even if the app closes or disconnects.
+          </Text>
         </View>
       ) : (
         <FlatList
@@ -154,22 +172,24 @@ export default function SessionsScreen() {
         />
       )}
 
-      <Pressable
-        onPress={() => setNewSessionVisible(true)}
-        accessibilityRole="button"
-        accessibilityLabel="New session"
-        style={[
-          styles.fab,
-          {
-            backgroundColor: colors.accent,
-            borderRadius: radius.pill,
-            right: screenMargin,
-            bottom: spacing.lg + insets.bottom,
-          },
-        ]}
-      >
-        <Icon icon={Plus} size={24} color={colors.onAccent} />
-      </Pressable>
+      {!isEmpty && (
+        <Pressable
+          onPress={() => setNewSessionVisible(true)}
+          accessibilityRole="button"
+          accessibilityLabel="New session"
+          style={[
+            styles.fab,
+            {
+              backgroundColor: colors.accent,
+              borderRadius: radius.pill,
+              right: screenMargin,
+              bottom: spacing.lg + insets.bottom,
+            },
+          ]}
+        >
+          <Icon icon={Plus} size={24} color={colors.onAccent} />
+        </Pressable>
+      )}
 
       <NewSessionSheet
         visible={isNewSessionVisible}

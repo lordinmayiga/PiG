@@ -15,10 +15,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import type { ThemePreference } from './theme/colors';
+import type { OpenRouterSettings } from './types';
 
 const KEYS = {
   themePreference: 'pig.themePreference',
   useRealBackend: 'pig.useRealBackend',
+  openRouterKeySuffix: 'pig.openRouterKeySuffix',
+  openRouterHasKey: 'pig.openRouterHasKey',
 } as const;
 
 export async function loadThemePreference(): Promise<ThemePreference | null> {
@@ -62,3 +65,26 @@ export async function saveUseRealBackend(value: boolean): Promise<void> {
     // Best-effort — see file header.
   }
 }
+
+export async function loadOpenRouterSettings(): Promise<OpenRouterSettings> {
+  try {
+    const hasKey = (await AsyncStorage.getItem(KEYS.openRouterHasKey)) === 'true';
+    const keySuffix = (await AsyncStorage.getItem(KEYS.openRouterKeySuffix)) ?? undefined;
+    return { hasKey, keySuffix };
+  } catch {
+    return { hasKey: false };
+  }
+}
+
+export async function saveOpenRouterKey(key: string): Promise<void> {
+  const trimmed = key.trim();
+  if (!trimmed) return;
+  try {
+    const suffix = trimmed.slice(-4);
+    await AsyncStorage.setItem(KEYS.openRouterHasKey, 'true');
+    await AsyncStorage.setItem(KEYS.openRouterKeySuffix, suffix);
+  } catch {
+    // Best-effort — see file header.
+  }
+}
+

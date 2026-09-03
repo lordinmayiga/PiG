@@ -17,12 +17,12 @@ interface ConnectStepProps {
   onToggleTokenPanel: () => void;
   forcedOutcome: ConnectOutcome | null;
   onForcedOutcomeChange: (value: ConnectOutcome | null) => void;
-  onSubmit: () => void;
+  onSubmit: (overrideForm?: ConnectFormState) => void;
 }
 
 /** Demo host/token filled in when "Simulate scan" stands in for a real camera capture. */
-const MOCK_SCANNED_HOST = '198.51.100.23:8443';
-const MOCK_SCANNED_TOKEN = 'a1b2c3d4e5f6';
+export const MOCK_SCANNED_HOST = '198.51.100.23:8443';
+export const MOCK_SCANNED_TOKEN = 'a1b2c3d4e5f6';
 
 export default function ConnectStep({
   mode,
@@ -39,9 +39,10 @@ export default function ConnectStep({
   const [scanSimulated, setScanSimulated] = useState(false);
 
   const handleSimulateScan = () => {
-    onFormChange({ host: MOCK_SCANNED_HOST, token: MOCK_SCANNED_TOKEN });
+    const simulated: ConnectFormState = { host: MOCK_SCANNED_HOST, token: MOCK_SCANNED_TOKEN };
+    onFormChange(simulated);
     setScanSimulated(true);
-    onSubmit();
+    onSubmit(simulated);
   };
 
   return (
@@ -88,7 +89,7 @@ export default function ConnectStep({
             placeholder="Paste the token from pig-bridge pair"
             autoCapitalize="none"
           />
-          <PrimaryButton label="Connect" onPress={onSubmit} disabled={!form.host.trim() || !form.token.trim()} />
+          <PrimaryButton label="Connect" onPress={() => onSubmit()} disabled={!form.host.trim() || !form.token.trim()} />
         </View>
       )}
 

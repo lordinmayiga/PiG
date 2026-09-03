@@ -74,9 +74,7 @@ PiG is a mobile terminal & agent workstation, not a consumer social app. Motion 
 - **Folder Traversal**:
   - Descending into a folder: subtle forward slide (`translateX: 12 -> 0`, `180ms`).
   - Ascending to parent: subtle reverse slide (`translateX: -12 -> 0`, `180ms`).
-- **File Viewer Sheet**:
-  - Bottom sheet slides up with code/markdown content.
-  - Dismissable via downward swipe gesture.
+  - File Viewer Sheet: Bottom sheet slides up with code/markdown content.
 
 ### 5. Embedded Browser (`BrowserScreen`)
 - **Tab Strip (`TabStrip.tsx`)**:

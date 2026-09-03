@@ -68,11 +68,12 @@ export function handleMockBridgeMessage(incoming: Envelope, socket: MockServerSo
 
     case 'resync_request': {
       const payload = incoming.payload as ResyncRequestPayload | undefined;
+      const isDefaultMock = payload?.sessionId === 'sess-1';
       const snapshot: ResyncSnapshotPayload = {
         sessions: mockSessions,
         sessionId: payload?.sessionId,
-        transcript: payload?.sessionId ? mockTranscript : undefined,
-        syncCursor: mockTranscript[mockTranscript.length - 1]?.id,
+        transcript: isDefaultMock ? mockTranscript : (payload?.sessionId ? [] : undefined),
+        syncCursor: isDefaultMock ? mockTranscript[mockTranscript.length - 1]?.id : undefined,
       };
       socket.send(envelope('resync_snapshot', snapshot, payload?.sessionId));
       return;

@@ -6,7 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { SettingsRow } from '../components/SettingsRow';
 import { mockOpenRouterSettings } from '../fixtures/settings';
 import { clearBridgeCredentials, loadBridgeCredentials, type BridgeCredentials } from '../secureStorage';
-import { loadUseRealBackend, saveUseRealBackend } from '../storage';
+import { loadOpenRouterSettings, loadUseRealBackend, saveOpenRouterKey, saveUseRealBackend } from '../storage';
 import { Icon, useTheme, useThemeMode, type ThemePreference } from '../theme';
 import type { OpenRouterSettings } from '../types';
 
@@ -53,6 +53,11 @@ export default function SettingsScreen() {
   useEffect(() => {
     loadBridgeCredentials().then(setCredentials);
     loadUseRealBackend().then(setUseRealBackend);
+    loadOpenRouterSettings().then((saved) => {
+      if (saved.hasKey) {
+        setOpenRouter(saved);
+      }
+    });
   }, []);
 
   const handleToggleRealBackend = (value: boolean) => {
@@ -107,6 +112,7 @@ export default function SettingsScreen() {
     // Mock: a real save would POST the plaintext key to the VPS backend and
     // only ever get a masked suffix back. Nothing but that suffix is kept.
     setOpenRouter({ hasKey: true, keySuffix: trimmed.slice(-4) });
+    void saveOpenRouterKey(trimmed);
     setKeyDraft('');
     setIsEditingKey(false);
   };
