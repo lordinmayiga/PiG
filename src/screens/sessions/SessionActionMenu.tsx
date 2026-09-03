@@ -1,8 +1,10 @@
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text } from 'react-native';
+import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Pencil, Trash2 } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../../theme';
+import { useSheetMotion } from '../../theme/motion';
 import type { Session } from '../../types';
 
 export interface SessionActionMenuProps {
@@ -16,16 +18,19 @@ export interface SessionActionMenuProps {
 export default function SessionActionMenu({ session, onClose, onRename, onKill }: SessionActionMenuProps) {
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
   const insets = useSafeAreaInsets();
+  const { mounted, backdropStyle, sheetStyle } = useSheetMotion(session !== null);
 
   return (
-    <Modal visible={session !== null} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable
-        style={[styles.backdrop, { backgroundColor: colors.scrim }]}
-        onPress={onClose}
-        accessibilityLabel="Close menu"
-        accessibilityRole="button"
-      />
-      <View
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
+      <ReanimatedAnimated.View style={[styles.backdrop, backdropStyle]}>
+        <Pressable
+          style={[styles.backdrop, { backgroundColor: colors.scrim }]}
+          onPress={onClose}
+          accessibilityLabel="Close menu"
+          accessibilityRole="button"
+        />
+      </ReanimatedAnimated.View>
+      <ReanimatedAnimated.View
         style={[
           styles.sheet,
           {
@@ -36,6 +41,7 @@ export default function SessionActionMenu({ session, onClose, onRename, onKill }
             paddingBottom: spacing.sm + insets.bottom,
             paddingHorizontal: spacing.lg,
           },
+          sheetStyle,
         ]}
       >
         {session && (
@@ -74,7 +80,7 @@ export default function SessionActionMenu({ session, onClose, onRename, onKill }
         >
           <Text style={[typeScale.body, { color: colors.inkSecondary }]}>Cancel</Text>
         </Pressable>
-      </View>
+      </ReanimatedAnimated.View>
     </Modal>
   );
 }

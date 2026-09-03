@@ -1,8 +1,10 @@
 import { useRef, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '../../theme';
+import { useSheetMotion } from '../../theme/motion';
 import type { Session } from '../../types';
 
 export interface RenameSessionSheetProps {
@@ -30,6 +32,7 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
   // setState during render rather than in an effect, per React's
   // "adjusting state when a prop changes" pattern.
   const isOpen = session !== null;
+  const { mounted, backdropStyle, sheetStyle } = useSheetMotion(isOpen);
   const [wasOpen, setWasOpen] = useState(isOpen);
   if (isOpen !== wasOpen) {
     setWasOpen(isOpen);
@@ -45,26 +48,26 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
   };
 
   return (
-    <Modal visible={session !== null} transparent animationType="slide" onRequestClose={onClose} onShow={handleShow}>
-      <Pressable
-        style={[styles.backdrop, { backgroundColor: colors.scrim }]}
-        onPress={onClose}
-        accessibilityLabel="Close rename sheet"
-        accessibilityRole="button"
-      />
-      <KeyboardAvoidingView
-        behavior="padding"
-        style={[
-          styles.sheet,
-          {
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose} onShow={handleShow}>
+      <ReanimatedAnimated.View style={[styles.backdrop, backdropStyle]}>
+        <Pressable
+          style={[styles.backdrop, { backgroundColor: colors.scrim }]}
+          onPress={onClose}
+          accessibilityLabel="Close rename sheet"
+          accessibilityRole="button"
+        />
+      </ReanimatedAnimated.View>
+      <ReanimatedAnimated.View style={[styles.sheet, sheetStyle]}>
+        <KeyboardAvoidingView
+          behavior="padding"
+          style={{
             backgroundColor: colors.elevated,
             borderTopLeftRadius: radius.sheet,
             borderTopRightRadius: radius.sheet,
             padding: spacing.lg,
             paddingBottom: spacing.lg + insets.bottom,
-          },
-        ]}
-      >
+          }}
+        >
         <Text style={[typeScale.heading, { color: colors.ink }]}>Rename session</Text>
 
         <TextInput
@@ -115,7 +118,8 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
             </Text>
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+      </ReanimatedAnimated.View>
     </Modal>
   );
 }
