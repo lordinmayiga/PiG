@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { KeyRound, Lock, LogOut, Moon, Server, Smartphone, Sun } from 'lucide-react-native';
 import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { SettingsRow } from '../components/SettingsRow';
@@ -8,6 +9,7 @@ import { mockOpenRouterSettings } from '../fixtures/settings';
 import { clearBridgeCredentials, loadBridgeCredentials, type BridgeCredentials } from '../secureStorage';
 import { loadOpenRouterSettings, loadUseRealBackend, saveOpenRouterKey, saveUseRealBackend } from '../storage';
 import { Icon, useTheme, useThemeMode, type ThemePreference } from '../theme';
+import { usePressScale } from '../theme/motion';
 import type { OpenRouterSettings } from '../types';
 
 /** Last 4 chars only, never the full token — matches the OpenRouter key's masking. */
@@ -87,6 +89,11 @@ export default function SettingsScreen() {
     ]);
   };
 
+  // Key editor's Cancel/Save are plain Pressables (not SettingsRow), so they
+  // get their own press-scale feedback (pig-motion §6, Rows).
+  const cancelPress = usePressScale();
+  const savePress = usePressScale();
+
   const [isEditingKey, setIsEditingKey] = useState(false);
   // Transient plaintext input only — cleared the moment Save mocks the
   // round trip. Never merged into persisted state; only the masked
@@ -106,6 +113,12 @@ export default function SettingsScreen() {
   const saveKeyEdit = () => {
     const trimmed = keyDraft.trim();
     if (!trimmed) {
+      // Native Alert.alert — the OS renders and animates this dialog itself,
+      // so it can't carry the custom damped scale transition (pig-motion
+      // Phase 5) without replacing it with a fully custom modal. The
+      // disconnect confirmation below (handleDisconnect) is native
+      // Alert.alert too, for the same reason — skipped here rather than
+      // rebuilt as a bespoke modal.
       Alert.alert('Key required', 'Paste a key before saving, or cancel.');
       return;
     }
@@ -249,32 +262,35 @@ export default function SettingsScreen() {
                   onPress={cancelKeyEdit}
                   accessibilityRole="button"
                   accessibilityLabel="Cancel"
-                  style={({ pressed }) => [
-                    styles.editorButton,
-                    { minHeight: minTouchTarget, borderRadius: radius.pill, opacity: pressed ? 0.6 : 1 },
-                  ]}
+                  {...cancelPress.pressProps}
+                  style={{ minHeight: minTouchTarget }}
                 >
-                  <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.label, { color: colors.inkSecondary }]}>
-                    Cancel
-                  </Text>
+                  <Animated.View
+                    style={[styles.editorButton, cancelPress.style, { minHeight: minTouchTarget, borderRadius: radius.pill }]}
+                  >
+                    <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.label, { color: colors.inkSecondary }]}>
+                      Cancel
+                    </Text>
+                  </Animated.View>
                 </Pressable>
                 <Pressable
                   onPress={saveKeyEdit}
                   accessibilityRole="button"
                   accessibilityLabel="Save key"
-                  style={({ pressed }) => [
-                    styles.editorButton,
-                    {
-                      minHeight: minTouchTarget,
-                      borderRadius: radius.pill,
-                      backgroundColor: colors.accent,
-                      opacity: pressed ? 0.85 : 1,
-                    },
-                  ]}
+                  {...savePress.pressProps}
+                  style={{ minHeight: minTouchTarget }}
                 >
-                  <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.label, { color: colors.onAccent }]}>
-                    Save
-                  </Text>
+                  <Animated.View
+                    style={[
+                      styles.editorButton,
+                      savePress.style,
+                      { minHeight: minTouchTarget, borderRadius: radius.pill, backgroundColor: colors.accent },
+                    ]}
+                  >
+                    <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.label, { color: colors.onAccent }]}>
+                      Save
+                    </Text>
+                  </Animated.View>
                 </Pressable>
               </View>
             </View>
@@ -283,6 +299,17 @@ export default function SettingsScreen() {
 
         <SectionHeader label="Security" />
         <View style={[styles.card, { backgroundColor: colors.card, borderRadius: radius.card, borderColor: colors.border }]}>
+          {/*
+            Switch feedback (Phase 5 pig-motion): the native Switch already
+            animates its thumb/track transition on Android and iOS, so no
+            custom Reanimated motion is layered on top here — matching
+            "platform-native spring toggle, no custom delay" from the skill.
+            A haptic tick on toggle is intentionally not added: expo-haptics
+            isn't a dependency of this app yet (checked package.json) and no
+            other screen in the app uses haptics, so adding it here would
+            mean pulling in and prebuilding a new native module for a single
+            row. Revisit once expo-haptics is adopted app-wide.
+          */}
           <SettingsRow
             icon={Lock}
             label="Require unlock to open app"
