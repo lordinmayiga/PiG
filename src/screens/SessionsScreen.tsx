@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Plus } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
+import { useScaleIn, usePressScale } from '../theme/motion';
 import { mockSessions, emptySessions } from '../fixtures/sessions';
 import { useSessions } from '../contexts/SessionsContext';
 import type { Session } from '../types';
@@ -43,6 +45,13 @@ export default function SessionsScreen() {
   const [isNewSessionVisible, setNewSessionVisible] = useState(false);
   const [menuSession, setMenuSession] = useState<Session | null>(null);
   const [renameSession, setRenameSession] = useState<Session | null>(null);
+  // Session whose kill has been confirmed but whose row-collapse animation
+  // (SessionCard's useCollapseOnRemove) hasn't settled yet — the session
+  // is only actually removed from `sessions` once that animation completes.
+  const [killingSessionId, setKillingSessionId] = useState<string | null>(null);
+
+  const fabScaleStyle = useScaleIn();
+  const { style: fabPressStyle, pressProps: fabPressProps } = usePressScale();
 
   const openTranscript = (session: Session) => {
     navigation.navigate('Transcript', { sessionId: session.id });
@@ -54,9 +63,14 @@ export default function SessionsScreen() {
       {
         text: 'Kill session',
         style: 'destructive',
-        onPress: () => removeSessionLocally(session.id),
+        onPress: () => setKillingSessionId(session.id),
       },
     ]);
+  };
+
+  const handleKillAnimationComplete = (sessionId: string) => {
+    removeSessionLocally(sessionId);
+    setKillingSessionId((current) => (current === sessionId ? null : current));
   };
 
   const handleMenuKill = (session: Session) => {
@@ -161,6 +175,8 @@ export default function SessionsScreen() {
               onPress={openTranscript}
               onOpenMenu={setMenuSession}
               onSwipeKill={requestKill}
+              isKilling={item.id === killingSessionId}
+              onKillAnimationComplete={handleKillAnimationComplete}
             />
           )}
           contentContainerStyle={{
@@ -173,22 +189,27 @@ export default function SessionsScreen() {
       )}
 
       {!isEmpty && (
-        <Pressable
-          onPress={() => setNewSessionVisible(true)}
-          accessibilityRole="button"
-          accessibilityLabel="New session"
+        <ReanimatedAnimated.View
           style={[
-            styles.fab,
-            {
-              backgroundColor: colors.accent,
-              borderRadius: radius.pill,
-              right: screenMargin,
-              bottom: spacing.lg + insets.bottom,
-            },
+            styles.fabWrapper,
+            { right: screenMargin, bottom: spacing.lg + insets.bottom },
+            fabScaleStyle,
           ]}
         >
-          <Icon icon={Plus} size={24} color={colors.onAccent} />
-        </Pressable>
+          <Pressable
+            onPress={() => setNewSessionVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="New session"
+            style={styles.fabPressable}
+            {...fabPressProps}
+          >
+            <ReanimatedAnimated.View
+              style={[styles.fab, { backgroundColor: colors.accent, borderRadius: radius.pill }, fabPressStyle]}
+            >
+              <Icon icon={Plus} size={24} color={colors.onAccent} />
+            </ReanimatedAnimated.View>
+          </Pressable>
+        </ReanimatedAnimated.View>
       )}
 
       <NewSessionSheet
@@ -225,10 +246,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  fab: {
+  fabWrapper: {
     position: 'absolute',
     width: 56,
     height: 56,
+  },
+  fabPressable: {
+    width: '100%',
+    height: '100%',
+  },
+  fab: {
+    width: '100%',
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',

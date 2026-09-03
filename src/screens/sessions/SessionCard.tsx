@@ -4,7 +4,7 @@ import ReanimatedAnimated from 'react-native-reanimated';
 import { EllipsisVertical, Rocket, SquareTerminal, Trash2 } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../../theme';
-import { STAGGER_OFFSET_MS, useFadeSlideIn } from '../../theme/motion';
+import { STAGGER_OFFSET_MS, useCollapseOnRemove, useFadeSlideIn, usePressScale } from '../../theme/motion';
 import type { AgentKind, Session, SessionStatus } from '../../types';
 
 const SWIPE_ACTION_WIDTH = 88;
@@ -40,11 +40,26 @@ export interface SessionCardProps {
   onPress: (session: Session) => void;
   onOpenMenu: (session: Session) => void;
   onSwipeKill: (session: Session) => void;
+  /** True once this session's kill has been confirmed — triggers the row-collapse-then-delete animation. */
+  isKilling?: boolean;
+  /** Called once the collapse animation has settled — the caller should actually delete the session here. */
+  onKillAnimationComplete: (sessionId: string) => void;
 }
 
-export default function SessionCard({ session, index, onPress, onOpenMenu, onSwipeKill }: SessionCardProps) {
+export default function SessionCard({
+  session,
+  index,
+  onPress,
+  onOpenMenu,
+  onSwipeKill,
+  isKilling = false,
+  onKillAnimationComplete,
+}: SessionCardProps) {
   const { colors, spacing, radius, cardPadding, typeScale, minTouchTarget } = useTheme();
   const enterStyle = useFadeSlideIn(index * STAGGER_OFFSET_MS);
+  const { style: pressStyle, pressProps } = usePressScale();
+  const [measuredHeight, setMeasuredHeight] = useState(0);
+  const collapseStyle = useCollapseOnRemove(isKilling, measuredHeight, () => onKillAnimationComplete(session.id));
   const [translateX] = useState(() => new Animated.Value(0));
   // Plain mutable box (not a React ref) tracking swipe-open state
   // synchronously for the gesture callbacks below, mirrored into `isOpen`
@@ -102,7 +117,12 @@ export default function SessionCard({ session, index, onPress, onOpenMenu, onSwi
         : colors.idleDot;
 
   return (
-    <ReanimatedAnimated.View style={enterStyle}>
+    <ReanimatedAnimated.View
+      style={[enterStyle, collapseStyle]}
+      onLayout={(event) => {
+        if (!isKilling) setMeasuredHeight(event.nativeEvent.layout.height);
+      }}
+    >
       <View style={[styles.swipeContainer, { borderRadius: radius.card }]}>
         <Pressable
           style={[styles.swipeAction, { width: SWIPE_ACTION_WIDTH, backgroundColor: colors.destructive }]}
@@ -123,67 +143,72 @@ export default function SessionCard({ session, index, onPress, onOpenMenu, onSwi
             onLongPress={() => onOpenMenu(session)}
             accessibilityRole="button"
             accessibilityLabel={`${session.name}, ${agent.label}, ${statusLabel[session.status]}`}
-            style={[
-              styles.pressable,
-              {
-                backgroundColor: colors.card,
-                borderColor: colors.border,
-                borderRadius: radius.card,
-                padding: cardPadding,
-              },
-            ]}
+            {...pressProps}
           >
-            <View style={styles.headerRow}>
-              <View style={[styles.agentBadge, { flex: 1 }]}>
-                <Icon icon={agent.icon} size={16} color={colors.inkSecondary} />
-                <Text style={[typeScale.caption, { color: colors.inkSecondary, marginLeft: spacing.xxs }]}>
-                  {agent.label}
-                </Text>
+            <ReanimatedAnimated.View
+              style={[
+                styles.pressable,
+                pressStyle,
+                {
+                  backgroundColor: colors.card,
+                  borderColor: colors.border,
+                  borderRadius: radius.card,
+                  padding: cardPadding,
+                },
+              ]}
+            >
+              <View style={styles.headerRow}>
+                <View style={[styles.agentBadge, { flex: 1 }]}>
+                  <Icon icon={agent.icon} size={16} color={colors.inkSecondary} />
+                  <Text style={[typeScale.caption, { color: colors.inkSecondary, marginLeft: spacing.xxs }]}>
+                    {agent.label}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => onOpenMenu(session)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Options for ${session.name}`}
+                  style={[styles.menuButton, { minWidth: minTouchTarget / 2, minHeight: minTouchTarget / 2 }]}
+                >
+                  <Icon icon={EllipsisVertical} size={20} color={colors.inkSecondary} />
+                </Pressable>
               </View>
-              <Pressable
-                onPress={() => onOpenMenu(session)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={`Options for ${session.name}`}
-                style={[styles.menuButton, { minWidth: minTouchTarget / 2, minHeight: minTouchTarget / 2 }]}
+
+              <Text
+                style={[typeScale.subheading, { color: colors.ink, marginTop: spacing.xxs }]}
+                numberOfLines={1}
               >
-                <Icon icon={EllipsisVertical} size={20} color={colors.inkSecondary} />
-              </Pressable>
-            </View>
+                {session.name}
+              </Text>
 
-            <Text
-              style={[typeScale.subheading, { color: colors.ink, marginTop: spacing.xxs }]}
-              numberOfLines={1}
-            >
-              {session.name}
-            </Text>
+              <Text
+                style={[typeScale.caption, { color: colors.inkSecondary, marginTop: spacing.xxs }]}
+                numberOfLines={1}
+                ellipsizeMode="middle"
+              >
+                {session.folder}
+              </Text>
 
-            <Text
-              style={[typeScale.caption, { color: colors.inkSecondary, marginTop: spacing.xxs }]}
-              numberOfLines={1}
-              ellipsizeMode="middle"
-            >
-              {session.folder}
-            </Text>
+              <Text
+                style={[typeScale.body, { color: colors.inkSecondary, marginTop: spacing.xs }]}
+                numberOfLines={2}
+              >
+                {session.lastMessagePreview}
+              </Text>
 
-            <Text
-              style={[typeScale.body, { color: colors.inkSecondary, marginTop: spacing.xs }]}
-              numberOfLines={2}
-            >
-              {session.lastMessagePreview}
-            </Text>
-
-            <View style={[styles.footerRow, { marginTop: spacing.sm }]}>
-              <View style={styles.statusGroup}>
-                <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
-                <Text style={[typeScale.caption, { color: colors.inkSecondary, marginLeft: spacing.xxs }]}>
-                  {statusLabel[session.status]}
+              <View style={[styles.footerRow, { marginTop: spacing.sm }]}>
+                <View style={styles.statusGroup}>
+                  <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
+                  <Text style={[typeScale.caption, { color: colors.inkSecondary, marginLeft: spacing.xxs }]}>
+                    {statusLabel[session.status]}
+                  </Text>
+                </View>
+                <Text style={[typeScale.caption, { color: colors.inkPlaceholder }]}>
+                  {formatRelativeTime(session.lastActivityAt)}
                 </Text>
               </View>
-              <Text style={[typeScale.caption, { color: colors.inkPlaceholder }]}>
-                {formatRelativeTime(session.lastActivityAt)}
-              </Text>
-            </View>
+            </ReanimatedAnimated.View>
           </Pressable>
         </Animated.View>
       </View>

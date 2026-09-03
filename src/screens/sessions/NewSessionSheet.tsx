@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { KeyboardAvoidingView, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Rocket, SquareTerminal } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../../theme';
+import { useSheetMotion } from '../../theme/motion';
 import { mockRecentFolders } from '../../fixtures/folders';
 import type { AgentKind } from '../../types';
 
@@ -33,6 +35,7 @@ export interface NewSessionSheetProps {
 export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessionSheetProps) {
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
   const insets = useSafeAreaInsets();
+  const { mounted, backdropStyle, sheetStyle } = useSheetMotion(visible);
 
   const [agent, setAgent] = useState<AgentKind>('claude-code');
   const [folder, setFolder] = useState('');
@@ -75,26 +78,26 @@ export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessi
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable
-        style={[styles.backdrop, { backgroundColor: colors.scrim }]}
-        onPress={onClose}
-        accessibilityLabel="Close new session sheet"
-        accessibilityRole="button"
-      />
-      <KeyboardAvoidingView
-        behavior="padding"
-        style={[
-          styles.sheet,
-          {
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
+      <ReanimatedAnimated.View style={[styles.backdrop, backdropStyle]}>
+        <Pressable
+          style={[styles.backdrop, { backgroundColor: colors.scrim }]}
+          onPress={onClose}
+          accessibilityLabel="Close new session sheet"
+          accessibilityRole="button"
+        />
+      </ReanimatedAnimated.View>
+      <ReanimatedAnimated.View style={[styles.sheet, sheetStyle]}>
+        <KeyboardAvoidingView
+          behavior="padding"
+          style={{
             backgroundColor: colors.elevated,
             borderTopLeftRadius: radius.sheet,
             borderTopRightRadius: radius.sheet,
             padding: spacing.lg,
             paddingBottom: spacing.lg + insets.bottom,
-          },
-        ]}
-      >
+          }}
+        >
         <Text style={[typeScale.heading, { color: colors.ink }]}>New session</Text>
 
         <Text style={[typeScale.label, { color: colors.inkSecondary, marginTop: spacing.lg }]}>Agent</Text>
@@ -243,7 +246,8 @@ export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessi
             </Text>
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+      </ReanimatedAnimated.View>
     </Modal>
   );
 }
