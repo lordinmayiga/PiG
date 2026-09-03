@@ -77,8 +77,11 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       const unsub = client.onActionResult((result) => {
         if (result.requestId === requestId) {
           unsub();
-          if (result.kind === 'action_pending_confirm') {
-            client.sendActionConfirm({ actionId: result.requestId, confirmed: true }, sessionId);
+          if (result.kind === 'action_pending_confirm' && result.actionId) {
+            // actionId (the pending action's own id), not requestId (which
+            // just correlates back to this route_input) — see
+            // ActionResultPayload's doc comment.
+            client.sendActionConfirm({ actionId: result.actionId, confirmed: true }, sessionId);
             client.requestResync();
           }
         }

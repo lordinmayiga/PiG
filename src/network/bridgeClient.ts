@@ -202,6 +202,8 @@ export class BridgeClient {
   private unsubscribers: (() => void)[] = [];
   /** Set false by disconnect() so a pending reconnect timer becomes a no-op. */
   private shouldReconnect = false;
+  /** Last logged session_list_update signature, so we only log on real change (polled every SESSION_POLL_MS). */
+  private lastLoggedSessionListSignature: string | null = null;
 
   private readonly connectionStatusEmitter = new Emitter<ConnectionStatus>();
   private readonly transcriptChunkEmitter = new Emitter<TranscriptChunkPayload>();
@@ -528,7 +530,16 @@ export class BridgeClient {
 
       case 'session_list_update': {
         const payload = envelope.payload as SessionListUpdatePayload;
-        console.log(`[PiG Bridge] <<< session_list_update received: ${payload.sessions.length} sessions.`);
+        // This event is polled every SESSION_POLL_MS while connected — only log when the
+        // list actually changed, not on every unchanged poll tick.
+        const signature = payload.sessions
+          .map((s) => `${s.id}:${s.status}:${s.lastActivityAt}`)
+          .sort()
+          .join(',');
+        if (signature !== this.lastLoggedSessionListSignature) {
+          this.lastLoggedSessionListSignature = signature;
+          console.log(`[PiG Bridge] <<< session_list_update received: ${payload.sessions.length} sessions.`);
+        }
         this.sessionListUpdateEmitter.emit(payload);
         return;
       }

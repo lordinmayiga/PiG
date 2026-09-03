@@ -12,8 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "test:unit": "tsx --test tests/agentProcess.test.ts",
-    "test:e2e": "tsx --test tests/bridge-e2e.test.ts"
+    "test:unit": "tsx --test tests/agentProcess.test.ts"
   },
   "dependencies": {
     "ws": "^8.18.0",

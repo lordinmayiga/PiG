@@ -19,9 +19,13 @@ Scope decisions executed:
 
 ## Status Overview
 
-- **Overall Status**: **100% Complete & Verified**
-- **TypeScript Check (`npx tsc --noEmit`)**: 0 errors
-- **Backend Test Suite (`npm --prefix backend test`)**: 28 / 28 passing (100%)
+- **Overall Status**: **100% Complete & Verified, including Phase 6's real in-app e2e proof**
+- **TypeScript Check (`npx tsc --noEmit`, root and backend)**: 0 errors
+- **Backend Test Suite (`npm --prefix backend test`)**: 16 / 16 passing (100%; the
+  12 raw-`ws` e2e tests in the now-deleted `bridge-e2e.test.ts` are superseded by
+  Phase 6's real UI e2e test)
+- **Root e2e Suite (`npm run test:e2e`, Playwright)**: 2 / 2 passing — the real
+  happy-path proof plus a boot smoke test
 - **Fixture Audit**: Zero remaining mock fixtures or backdoor credentials across codebase.
 
 ---
@@ -129,40 +133,55 @@ Real pairing foundation restored:
 
 ---
 
-## Phase 6 — Prove the real happy path (headless, in-app) (Not started)
+## Phase 6 — Prove the real happy path (headless, in-app) (Completed)
 
 Phases 0–5 make the workflow real; this phase proves it, end to end, through the
-actual app UI — not through a raw WebSocket client. `backend/tests/bridge-e2e.test.ts`
-still exists and still passes (verified above), but it drives the backend directly
-over `ws` and never touches a screen, so it can't stand in for this and should be
-retired once this phase lands.
+actual app UI — not through a raw WebSocket client.
 
-- [ ] **Tool**: Playwright driving `expo start --web` headlessly. Confirmed to boot
-  cleanly on this box (`npx expo start --web` served 200 on first try); the happy
-  path doesn't touch `BrowserScreen.tsx`'s `WebView`, so no native-only blocker is
-  expected.
-- [ ] **Pairing**: mint a real, fresh pairing token the same way `pig-bridge pair`
-  does (`mintPairingToken()`), then drive `ConnectStep`'s manual host/token fields
-  (scan mode is gone) and submit — no shortcut buttons exist anymore to bypass this.
-- [ ] **Assert real connect**: wait for the real `hello`/`hello_ack` outcome to land
-  on Tabs, then assert the Sessions screen populates from a real `resync_snapshot`
-  (no fixture fallback exists to mask a failure here anymore).
-- [ ] **Real session create**: drive "New session" through the UI, assert it appears
-  via the real create round trip (`client.createSession` → `action_result`/
-  `session_list_update`).
-- [ ] **Real send-and-reply**: open the session, send a deterministic prompt ("reply
-  with exactly PONG"), wait for a real `transcript_chunk` stream to render in the
-  transcript UI. This is the original ask: type it, in the app, and it texts back for
-  real.
-- [ ] **Cleanup**: kill the test session through the real 2-step confirm flow so the
-  VPS doesn't accumulate scratch tmux sessions across runs.
-- [ ] **Logging fix**: `bridgeClient.ts` currently logs every `session_list_update`
-  push it receives, which fires every `SESSION_POLL_MS` (5s) while connected. Change
-  it to log only when the session list actually changes. Leave the other event logs
-  (connect, send, receive, errors) as they are.
-- [ ] **Retire** `backend/tests/bridge-e2e.test.ts` once this phase's test covers the
-  same ground through the real UI.
+- [x] **Tool**: `@playwright/test` driving `expo start --web` headlessly
+  (`playwright.config.ts`, `e2e/smoke.spec.ts`, `e2e/happy-path.spec.ts`). Chromium
+  installed and confirmed booting the app cleanly; the happy path doesn't touch
+  `BrowserScreen.tsx`'s `WebView`, so no native-only blocker occurred.
+- [x] **Pairing**: `e2e/happy-path.spec.ts` mints a real, fresh pairing token the
+  same way `pig-bridge pair` does (spawns the actual CLI entrypoint, which calls
+  `mintPairingToken()`), then drives `ConnectStep`'s manual host/token fields (scan
+  mode is gone) and submits.
+- [x] **Assert real connect**: waits for the Sessions screen to mount (populated
+  from a real `resync_snapshot` — no fixture fallback exists to mask a failure here).
+- [x] **Real session create**: drives "New session" through the UI (folder + name
+  fields, "Start session"), which navigates into the new session's real Transcript
+  screen via the real create round trip.
+- [x] **Real send-and-reply**: sends "reply with exactly PONG" through the real
+  composer and asserts the real `transcript_chunk` stream renders "PONG" in the
+  transcript UI — the original ask, proven live against the real `claude` CLI.
+- [x] **Cleanup**: kills the test session through the real 2-step confirm flow
+  (menu → Kill session → `window.confirm`, which is the real web-platform path —
+  `Alert.alert` is a no-op on react-native-web) and additionally polls `tmux
+  has-session` directly to prove the backend actually tore it down, not just that
+  the UI card disappeared.
+- [x] **Bug found and fixed by this phase**: `SessionsContext.killSession`'s
+  response correlation compared `result.requestId` against the original
+  `route_input` envelope id, but `proposeAction`'s `kill_session` branch returned a
+  freshly-generated id as `requestId` instead — so the correlation never matched,
+  `sendActionConfirm` was never called, and the tmux session survived even though
+  the UI removed the card optimistically. Fixed by adding a distinct `actionId`
+  field to `ActionResultPayload` (separate from `requestId`, which now always
+  correlates to the original request envelope per its documented contract across
+  every action kind) and threading the original `requestId` through
+  `routeInput.ts` → `proposeAction`. See `src/types/index.ts`,
+  `backend/src/actions.ts`, `backend/src/routeInput.ts`,
+  `src/contexts/SessionsContext.tsx`. Caught only because this phase asserts the
+  real tmux state, not just the UI — exactly what a raw-`ws` test or a UI test that
+  only checks the optimistic card removal would both have missed.
+- [x] **Logging fix**: `bridgeClient.ts` now signature-checks
+  `id:status:lastActivityAt` across a `session_list_update` push and only logs when
+  it actually changed, instead of every `SESSION_POLL_MS` (5s) tick.
+- [x] **Retired** `backend/tests/bridge-e2e.test.ts` — deleted, along with backend's
+  `test:e2e` npm script. `e2e/happy-path.spec.ts` covers the same ground through the
+  real UI (and catches more, per the bug above). Backend's own `npm test` (16/16)
+  and the root `npm run test:e2e` (Playwright, 2/2) both pass.
 
 Caveat: this is an integration test, not a portable unit test — it requires a real
-VPS with a real backend, real tmux, and a real agent CLI installed (this machine,
-right now). It won't run unmodified on a laptop or a generic CI runner.
+VPS with a real backend already running (`npm start` in `backend/`, port 8787 by
+default), real tmux, and a real agent CLI installed (this machine, right now). It
+won't run unmodified on a laptop or a generic CI runner without the same setup.

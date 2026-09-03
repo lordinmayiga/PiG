@@ -92,6 +92,7 @@ export function proposeAction(
   kind: PendingAction['kind'],
   sessionId: string | undefined,
   details: Record<string, unknown>,
+  requestId: string,
 ): ActionResultPayload {
   const now = Date.now();
   sweepExpired(now);
@@ -101,9 +102,15 @@ export function proposeAction(
     const action: PendingAction = { id, kind, sessionId, details };
     pendingActions.set(id, { action, expiresAt: now + PENDING_ACTION_TTL_MS });
     return {
-      requestId: id,
+      // Matches the originating route_input envelope's id, per
+      // ActionResultPayload's contract — lets the client correlate this
+      // reply the same way it does for every other action kind.
+      requestId,
       kind: 'action_pending_confirm',
       summary: sessionId ? `Kill session "${sessionId}"?` : 'Kill session?',
+      // The separate id the client must echo back as action_confirm's
+      // actionId — this is the pendingActions map key, not requestId.
+      actionId: id,
     };
   }
 
@@ -119,7 +126,6 @@ export function proposeAction(
   // background. In practice, server.ts should prefer awaiting
   // `executeNonDestructiveAction` directly instead of relying on this
   // branch — see that export below.
-  const requestId = randomUUID();
   void executeNonDestructiveAction(kind, sessionId, details).catch((err: unknown) => {
     // Best-effort background execution for the sync-signature path; errors
     // here can't be surfaced through this function's synchronous return, so

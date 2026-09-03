@@ -230,7 +230,7 @@ export async function routeInput(
     const kind = ACTION_TYPE_TO_KIND[classifyResult.action.type];
     if (kind) {
       if (kind === 'kill_session') {
-        return proposeAction(kind, payload.sessionId, classifyResult.action.params ?? {});
+        return proposeAction(kind, payload.sessionId, classifyResult.action.params ?? {}, requestId);
       }
       try {
         const actionResult = await executeNonDestructiveAction(

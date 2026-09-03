@@ -177,13 +177,21 @@ export interface TranscriptChunkPayload {
 
 /** backend -> app: result of a route_input classification or action_confirm. */
 export interface ActionResultPayload {
-  /** id of the request envelope this responds to. */
+  /** id of the request envelope this responds to. Always matches the
+   * originating `route_input`/`action_confirm` envelope's own id, so a
+   * client can correlate a reply back to the request it sent regardless of
+   * `kind` — including `action_pending_confirm`, which additionally hands
+   * back a separate `actionId` (see below). */
   requestId: string;
   kind: 'prompt_routed' | 'action_pending_confirm' | 'action_executed' | 'action_rejected';
   /** Cleaned prompt text, when kind is 'prompt_routed'. */
   cleanedPrompt?: string;
   /** Human-readable summary of the routed/executed action. */
   summary?: string;
+  /** Only present when kind is 'action_pending_confirm': the id of the
+   * server-side pending action itself, distinct from `requestId`. Echo this
+   * back (not `requestId`) as `ActionConfirmPayload.actionId`. */
+  actionId?: string;
 }
 
 /** backend -> app: typed error. */
