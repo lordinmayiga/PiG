@@ -1,11 +1,13 @@
-import { useCallback, useMemo, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FlatList, Pressable, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { ChevronLeft, File, FileText, Folder, Image as ImageIcon } from 'lucide-react-native';
+import { ChevronLeft, File, FileText, Folder, FolderOpen, Image as ImageIcon } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
+import { useFolderTraverseSlide } from '../theme/motion';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
 import type { FileNode } from '../types';
 import { mockFileContents, mockFileTree } from '../fixtures/files';
@@ -17,6 +19,11 @@ function parentPath(path: string): string {
   const segments = path.split('/');
   segments.pop();
   return segments.join('/');
+}
+
+/** Segment depth of a path — used to tell descending from ascending navigation. */
+function pathDepth(path: string): number {
+  return path ? path.split('/').length : 0;
 }
 
 function formatBytes(bytes?: number): string {
@@ -51,8 +58,23 @@ export default function FileExplorerScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
   const [currentPath, setCurrentPath] = useState('');
+  const [navDirection, setNavDirection] = useState<'forward' | 'back'>('forward');
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
+  const traverseStyle = useFolderTraverseSlide(currentPath, navDirection);
+
+  const breadcrumbScrollRef = useRef<ScrollView>(null);
+  const breadcrumbLayouts = useRef<Record<string, { x: number; width: number }>>({});
+  const breadcrumbViewportWidth = useRef(0);
+
+  /** Navigate to `path`, inferring forward/back from the depth change for the slide direction. */
+  const navigateTo = useCallback(
+    (path: string) => {
+      setNavDirection(pathDepth(path) >= pathDepth(currentPath) ? 'forward' : 'back');
+      setCurrentPath(path);
+    },
+    [currentPath],
+  );
 
   const entries = useMemo(() => {
     const children = mockFileTree.filter((node) => parentPath(node.path) === currentPath);
@@ -73,26 +95,38 @@ export default function FileExplorerScreen() {
     return crumbs;
   }, [currentPath]);
 
-  const handlePress = useCallback((node: FileNode) => {
-    if (node.type === 'folder') {
-      setCurrentPath(node.path);
-      return;
-    }
-    const kind = kindForMimeType(node.mimeType);
-    setViewerFile({
-      name: node.name,
-      path: node.path,
-      kind,
-      mimeType: node.mimeType,
-      sizeBytes: node.sizeBytes,
-    });
-    setViewerContent(kind === 'text' ? mockFileContents[node.path] : undefined);
-  }, []);
+  const handlePress = useCallback(
+    (node: FileNode) => {
+      if (node.type === 'folder') {
+        navigateTo(node.path);
+        return;
+      }
+      const kind = kindForMimeType(node.mimeType);
+      setViewerFile({
+        name: node.name,
+        path: node.path,
+        kind,
+        mimeType: node.mimeType,
+        sizeBytes: node.sizeBytes,
+      });
+      setViewerContent(kind === 'text' ? mockFileContents[node.path] : undefined);
+    },
+    [navigateTo],
+  );
 
   const closeViewer = useCallback(() => {
     setViewerFile(null);
     setViewerContent(undefined);
   }, []);
+
+  // Bring the active (last) breadcrumb segment into view whenever the path changes.
+  useEffect(() => {
+    const active = breadcrumbs[breadcrumbs.length - 1];
+    const layout = breadcrumbLayouts.current[active.path];
+    if (!layout || !breadcrumbScrollRef.current) return;
+    const targetX = Math.max(0, layout.x + layout.width / 2 - breadcrumbViewportWidth.current / 2);
+    breadcrumbScrollRef.current.scrollTo({ x: targetX, animated: true });
+  }, [breadcrumbs]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.canvas }]}>
@@ -111,20 +145,30 @@ export default function FileExplorerScreen() {
       </View>
 
       <ScrollView
+        ref={breadcrumbScrollRef}
         horizontal
         showsHorizontalScrollIndicator={false}
         style={[styles.breadcrumbBar, { borderBottomColor: colors.border }]}
         contentContainerStyle={{ paddingHorizontal: spacing.md, alignItems: 'center' }}
+        onLayout={(e: LayoutChangeEvent) => {
+          breadcrumbViewportWidth.current = e.nativeEvent.layout.width;
+        }}
       >
         {breadcrumbs.map((crumb, index) => (
-          <View key={crumb.path} style={styles.crumbRow}>
+          <View
+            key={crumb.path}
+            style={styles.crumbRow}
+            onLayout={(e: LayoutChangeEvent) => {
+              breadcrumbLayouts.current[crumb.path] = { x: e.nativeEvent.layout.x, width: e.nativeEvent.layout.width };
+            }}
+          >
             {index > 0 ? (
               <Text style={[typeScale.body, { color: colors.inkSecondary, marginHorizontal: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
                 /
               </Text>
             ) : null}
             <Pressable
-              onPress={() => setCurrentPath(crumb.path)}
+              onPress={() => navigateTo(crumb.path)}
               accessibilityRole="button"
               accessibilityLabel={`Go to ${crumb.label}`}
               hitSlop={6}
@@ -143,57 +187,59 @@ export default function FileExplorerScreen() {
         ))}
       </ScrollView>
 
-      <FlatList
-        data={entries}
-        keyExtractor={(item) => item.path}
-        contentContainerStyle={{ paddingTop: spacing.xs, paddingBottom: spacing.xs + insets.bottom }}
-        ListEmptyComponent={
-          <View style={[styles.emptyState, { padding: spacing.xl, alignItems: 'center' }]}>
-            <Icon icon={FolderOpen} size={32} color={colors.inkSecondary} />
-            <Text
-              style={[typeScale.heading, { color: colors.ink, marginTop: spacing.sm, textAlign: 'center' }]}
-              maxFontSizeMultiplier={1.3}
-            >
-              This folder is empty
-            </Text>
-            {currentPath.length > 0 && (
-              <Pressable
-                onPress={() => setCurrentPath(parentPath(currentPath))}
-                accessibilityRole="button"
-                accessibilityLabel="Back to parent folder"
-                style={{ marginTop: spacing.md, minHeight: minTouchTarget, justifyContent: 'center' }}
+      <Animated.View style={[styles.listWrapper, traverseStyle]}>
+        <FlatList
+          data={entries}
+          keyExtractor={(item) => item.path}
+          contentContainerStyle={{ paddingTop: spacing.xs, paddingBottom: spacing.xs + insets.bottom }}
+          ListEmptyComponent={
+            <View style={[styles.emptyState, { padding: spacing.xl, alignItems: 'center' }]}>
+              <Icon icon={FolderOpen} size={24} color={colors.inkSecondary} />
+              <Text
+                style={[typeScale.heading, { color: colors.ink, marginTop: spacing.sm, textAlign: 'center' }]}
+                maxFontSizeMultiplier={1.3}
               >
-                <Text style={[typeScale.bodyMedium, { color: colors.accent }]} maxFontSizeMultiplier={1.3}>
-                  ← Back to parent folder
-                </Text>
-              </Pressable>
-            )}
-          </View>
-        }
-        renderItem={({ item }) => (
-          <Pressable
-            onPress={() => handlePress(item)}
-            accessibilityRole="button"
-            accessibilityLabel={item.name}
-            style={[
-              styles.row,
-              { paddingHorizontal: spacing.md, minHeight: minTouchTarget, borderBottomColor: colors.border },
-            ]}
-          >
-            <Icon icon={iconFor(item)} size={20} color={item.type === 'folder' ? colors.accent : colors.inkSecondary} />
-            <View style={{ marginLeft: spacing.sm, flex: 1 }}>
-              <Text style={[typeScale.body, { color: colors.ink }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
-                {item.name}
+                This folder is empty
               </Text>
-              {item.type === 'file' ? (
-                <Text style={[typeScale.caption, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
-                  {formatBytes(item.sizeBytes)}
-                </Text>
-              ) : null}
+              {currentPath.length > 0 && (
+                <Pressable
+                  onPress={() => navigateTo(parentPath(currentPath))}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back to parent folder"
+                  style={{ marginTop: spacing.md, minHeight: minTouchTarget, justifyContent: 'center' }}
+                >
+                  <Text style={[typeScale.bodyMedium, { color: colors.accent }]} maxFontSizeMultiplier={1.3}>
+                    ← Back to parent folder
+                  </Text>
+                </Pressable>
+              )}
             </View>
-          </Pressable>
-        )}
-      />
+          }
+          renderItem={({ item }) => (
+            <Pressable
+              onPress={() => handlePress(item)}
+              accessibilityRole="button"
+              accessibilityLabel={item.name}
+              style={[
+                styles.row,
+                { paddingHorizontal: spacing.md, minHeight: minTouchTarget, borderBottomColor: colors.border },
+              ]}
+            >
+              <Icon icon={iconFor(item)} size={20} color={item.type === 'folder' ? colors.accent : colors.inkSecondary} />
+              <View style={{ marginLeft: spacing.sm, flex: 1 }}>
+                <Text style={[typeScale.body, { color: colors.ink }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
+                  {item.name}
+                </Text>
+                {item.type === 'file' ? (
+                  <Text style={[typeScale.caption, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
+                    {formatBytes(item.sizeBytes)}
+                  </Text>
+                ) : null}
+              </View>
+            </Pressable>
+          )}
+        />
+      </Animated.View>
 
       <FileViewerSheet file={viewerFile} textContent={viewerContent} onClose={closeViewer} />
     </View>
@@ -218,6 +264,9 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     borderBottomWidth: StyleSheet.hairlineWidth,
     paddingVertical: 12,
+  },
+  listWrapper: {
+    flex: 1,
   },
   crumbRow: {
     flexDirection: 'row',
