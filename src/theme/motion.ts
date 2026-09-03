@@ -122,6 +122,34 @@ export function useStatusDotPulse(active: boolean): SharedValue<number> {
   return opacity;
 }
 
+/** File Explorer folder-traversal motion (pig-motion §Phase 3). */
+const FOLDER_SLIDE_DURATION = 180;
+const FOLDER_SLIDE_DISTANCE = 12;
+
+/**
+ * Forward/reverse slide used when navigating the File Explorer: descending
+ * into a child folder slides the new entries in from the right, going back
+ * up slides them in from the left. Re-fires whenever `navKey` changes —
+ * pass the current folder path.
+ */
+export function useFolderTraverseSlide(navKey: string, direction: 'forward' | 'back') {
+  const translateX = useSharedValue(0);
+
+  useEffect(() => {
+    if (reduceMotionEnabled) {
+      translateX.value = 0;
+      return;
+    }
+    translateX.value = direction === 'forward' ? FOLDER_SLIDE_DISTANCE : -FOLDER_SLIDE_DISTANCE;
+    translateX.value = withTiming(0, { duration: FOLDER_SLIDE_DURATION, easing: Easing.out(Easing.cubic) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navKey]);
+
+  return useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
+}
+
 /**
  * Typing-indicator dot pulse while awaiting the agent's first streamed
  * token (see pig-loading-states). `index` staggers each of the (usually
