@@ -298,17 +298,19 @@ together.
 | 2026-09-03 | This plan drafted (§1-§3 originally, target architecture + phased roadmap) | ✅ Done | `docs/REAL_AGENT_CONNECTION_PLAN.md` created. |
 | 2026-09-03 | Scoping pass before execution: found Phase 4 already ~90% built, found turn-id accumulation bug | ✅ Done | See §3a. Narrowed Track B scope, added a must-fix item to Track A. |
 | 2026-09-03 | §4 parallel track breakdown + §5 e2e/unit test specs written | ✅ Done | This edit. Not yet implemented — handing off. |
-| — | Track A: `sessionRegistry.ts` | ⬜ Not started | |
-| — | Track A: turn-id accumulation fix in `agentProcess.ts` | ⬜ Not started | Regression-tested by §5.1's unit test once written. |
-| — | Track A: `server.ts` `route_input` → spawn wiring | ⬜ Not started | Must preserve existing `prompt_routed` `action_result` contract (see `bridge-e2e.test.ts`'s existing lifecycle test). |
-| — | Track A: `server.ts` `resync_request` → real transcript | ⬜ Not started | |
-| — | Track B: `TranscriptScreen.tsx` `handleSend` → `client.sendRouteInput` cutover | ⬜ Not started | Small — gate on `client` existing. |
-| — | Track B: placeholder-swap fix for optimistic bubble | ⬜ Not started | |
-| — | Track C: confirm `agy` CLI streaming flags | ⬜ Not started | Currently a `// TODO` guess in `resolveAgentCommand`. |
-| — | §5.1 backend e2e streaming test | ⬜ Not started | Spec above; implement in `backend/tests/bridge-e2e.test.ts`. |
-| — | §5.1 `parseNdjsonLine`/accumulator unit test | ⬜ Not started | Spec above; new `backend/tests/agentProcess.test.ts`. |
-| — | §5.2 tmux mirror manual check | ⬜ Not started | |
-| — | §5.3 physical device manual check | ⬜ Not started | |
+| 2026-09-03 | Track A: `sessionRegistry.ts` | ✅ Done | `getOrCreateSession`/`appendTurn`/`getTranscript`/`setActiveHandle`, keyed by `sessionId` (== tmux session name throughout this codebase, confirmed via `actions.ts`). |
+| 2026-09-03 | Track A: turn-id accumulation fix in `agentProcess.ts` | ✅ Done | `parseNdjsonLine` now takes a `TurnParseState`; `createTurnParser(sessionId, agent)` owns one `randomUUID()` id + accumulator per spawned turn. Regression-tested (§5.1 unit test, `backend/tests/agentProcess.test.ts`) — 10/10 pass. |
+| 2026-09-03 | Track A: `server.ts` `route_input` → spawn wiring | ✅ Done | `spawnAndStreamTurn` (fire-and-forget, not awaited) resolves `cwd`/`agent` from live `listTmuxSessions()`, spawns via `spawnAgentInTmuxWindow`, broadcasts every chunk as `transcript_chunk` to all authed sockets, appends to the registry. `prompt_routed` `action_result` contract preserved (asserted by both the pre-existing lifecycle test and the new streaming e2e test). |
+| 2026-09-03 | Track A: `server.ts` `resync_request` → real transcript | ✅ Done | `handleResyncRequest` now reads `sessionRegistry.getTranscript(sessionId)`; `transcript`/`syncCursor` only included when the registry has seen that session (matches `getTranscript`'s `undefined`-vs-`[]` contract). |
+| 2026-09-03 | Track B: `TranscriptScreen.tsx` `handleSend` → `client.sendRouteInput` cutover | ✅ Done | `handleSend` now calls `client.sendRouteInput({ sessionId, text, attachmentIds: attachments.map(a => a.id) })` when `client` exists; `streamAgentReply` kept only as the no-backend fallback. |
+| 2026-09-03 | Track B: placeholder-swap fix for optimistic bubble | ✅ Done | Added `pendingPlaceholderIdRef` (keyed by sessionId) set in `handleSend` when routing to a real client; `onTranscriptChunk` replaces the placeholder by array index on the first chunk for that turn, then clears the ref, falling back to normal upsert-by-id after that. |
+| 2026-09-03 | Track C: confirm `agy` CLI streaming flags | ✅ Done | Verified live: `agy` uses Go-flag-style `--print=<prompt>` (NOT a separate positional argv entry like claude's `--print "text"` — that form errors). Real NDJSON shape captured (`event`/`step_update`/`result`, structurally unrelated to claude's `type`/`stream_event`/`assistant`/`result`) and implemented in `parseAntigravityLine` — see its doc in `agentProcess.ts` for the full catalogue. 4/4 antigravity unit tests pass; not yet covered by a live e2e test (§5.1's e2e test only exercises `claude-code`; an `agy`-specific e2e test would need a session tagged `antigravity`, which today only happens via `tmux.ts`'s window-name heuristic — a reasonable follow-up, not done here). |
+| 2026-09-03 | §5.1 backend e2e streaming test | ✅ Done | `backend/tests/bridge-e2e.test.ts`: new `test('E2E: Live agent turn streams real transcript_chunk envelopes', ...)`. Run live against the real `claude` CLI on this VPS (via the `pig-bridge` systemd service, restarted to pick up the new code): 4 chunks collected, all sharing one message id, `resync_snapshot` returned the completed turn, scratch session cleaned up. |
+| 2026-09-03 | §5.1 `parseNdjsonLine`/accumulator unit test | ✅ Done | `backend/tests/agentProcess.test.ts`, both `claude-code` and `antigravity` shapes covered (10 tests total). |
+| — | §5.2 tmux mirror manual check | ⬜ Not started | Not run this session — `createMirrorTmuxWindow` is exercised as a side effect of the e2e test's scratch sessions but its visibility wasn't manually inspected via `tmux list-windows`. |
+| — | §5.3 physical device manual check | ⬜ Not started | Needs a paired Android device — out of scope for this session. |
+
+**Full backend suite as of this entry: `npm test` in `backend/` — 22/22 passing** (10 unit + 12 e2e, run against the live `pig-bridge` systemd service on this VPS with the real `claude` CLI). `npm run typecheck` clean across the whole repo except one pre-existing, unrelated error in `src/screens/FileExplorerScreen.tsx` (not touched by this work).
 
 *Update this table in place as each item lands — status ✅/🔄/⬜, one row per
 item, keep the Notes column pointing at the actual commit/PR once one

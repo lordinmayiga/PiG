@@ -93,9 +93,19 @@ const execFileAsync = promisify(execFile);
  * conversation context — not wired yet, follow-up once per-turn submission
  * is implemented).
  *
- * `antigravity` (`agy`)'s actual stream-json-equivalent flags are not
- * confirmed anywhere in the plan or spec.
- * // TODO: confirm agy's actual stream-json equivalent flags
+ * `antigravity` (`agy`)'s flags verified live on this VPS (2026-09-03, `agy
+ * --help` + a real `--output-format stream-json` smoke test): `agy` uses Go
+ * `flag`-style parsing, where a flag that takes a value does NOT treat the
+ * next argv entry as its value the way `claude`'s `--print` does — `agy
+ * --print "text" --output-format stream-json` actually errors ("--print
+ * took \"--output-format\" as its prompt"). The value must be attached with
+ * `=`: `--print=<prompt>`. `-p`/`--prompt` are documented aliases for
+ * `--print`; `--print=<prompt>` is used here since that's the flag actually
+ * verified working. Unlike `claude`, no separate "include partial
+ * messages" flag exists or is needed — `--output-format stream-json` alone
+ * already streams token-level `text_delta`s (see `parseAntigravityLine`'s
+ * doc for the verified event shape, which is structurally unrelated to
+ * claude's).
  */
 function resolveAgentCommand(agent: AgentKind, prompt: string): { bin: string; args: string[] } {
   switch (agent) {
@@ -105,8 +115,7 @@ function resolveAgentCommand(agent: AgentKind, prompt: string): { bin: string; a
         args: ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', prompt],
       };
     case 'antigravity':
-      // TODO: confirm agy's actual stream-json equivalent flags
-      return { bin: 'agy', args: ['--output-format', 'stream-json', prompt] };
+      return { bin: 'agy', args: ['--output-format', 'stream-json', `--print=${prompt}`] };
   }
 }
 
@@ -150,6 +159,10 @@ export function spawnAgentInTmuxWindow(opts: SpawnAgentOptions): SpawnedAgentHan
   child.stdin.end();
 
   let stdoutBuffer = '';
+  // One parser instance per spawned turn, so every chunk this turn emits
+  // shares one message id and accumulates full text instead of each
+  // streamed token becoming its own message (see `createTurnParser`'s doc).
+  const parseLine = createTurnParser(sessionName, agent);
 
   child.stdout.on('data', (data: Buffer) => {
     stdoutBuffer += data.toString('utf8');
@@ -159,7 +172,7 @@ export function spawnAgentInTmuxWindow(opts: SpawnAgentOptions): SpawnedAgentHan
       const line = stdoutBuffer.slice(0, newlineIndex);
       stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
       if (line.trim().length === 0) continue;
-      const chunk = parseNdjsonLine(line, sessionName);
+      const chunk = parseLine(line);
       if (chunk) onChunk(chunk);
     }
   });
@@ -271,17 +284,55 @@ export async function sendInputToSession(paneId: string, text: string): Promise<
 }
 
 /**
+ * Per-turn accumulator state threaded through repeated `parseNdjsonLine`
+ * calls for the same spawned process — see `createTurnParser`'s doc for why
+ * this exists (one message id + growing text per turn, not one id per
+ * streamed token).
+ */
+export interface TurnParseState {
+  /** Minted once per turn (per `createTurnParser` call), reused for every
+   * chunk this turn emits so the client's upsert-by-id rendering grows one
+   * bubble instead of creating a new one per token. */
+  id: string;
+  /** Running text for the turn. `stream_event` deltas append to it;
+   * `assistant`/`result` events carry the full text already, so they
+   * overwrite it (safe/idempotent — see module doc). */
+  accumulatedText: string;
+}
+
+/**
  * Parses one line of `claude --print --output-format stream-json
  * --include-partial-messages --verbose`'s NDJSON stdout into a
  * `TranscriptChunkPayload`, or `null` if the line isn't transcript content
  * (malformed JSON, or a metadata event — see module doc for the full
  * verified shape catalogue).
  *
+ * Takes a `state` object (from `createTurnParser`) that it reads/mutates so
+ * every chunk for one turn shares `state.id` and carries the *full*
+ * accumulated text so far, not just this line's delta — matching what
+ * `TranscriptMessage.content` is expected to hold (the whole turn's text,
+ * not a fragment) and what the mobile client's upsert-by-id rendering
+ * expects (replace-in-place, not append-a-new-bubble). Call this directly
+ * (with a fresh `{ id: randomUUID(), accumulatedText: '' }` state) only for
+ * single-line/unit-test purposes; real spawn-time parsing goes through
+ * `createTurnParser`, which owns the state's lifetime for a whole turn.
+ *
  * `JSON.parse` failures are swallowed, not thrown — expected mid-stream if
  * a `data` chunk boundary ever split a line (shouldn't happen given the
  * line-buffering in `spawnAgentInTmuxWindow`, but cheap to guard).
+ *
+ * Dispatches to `parseAntigravityLine` for `agent: 'antigravity'` — `agy`'s
+ * NDJSON shape (verified live, 2026-09-03) is structurally unrelated to
+ * claude's (an `event`/`step_update`/`result` envelope, not `type`/
+ * `stream_event`/`assistant`/`result`), so it gets its own parser rather
+ * than being shoehorned into this one's `switch`.
  */
-export function parseNdjsonLine(line: string, sessionId: string): TranscriptChunkPayload | null {
+export function parseNdjsonLine(
+  line: string,
+  sessionId: string,
+  state: TurnParseState,
+  agent: AgentKind = 'claude-code',
+): TranscriptChunkPayload | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -292,6 +343,8 @@ export function parseNdjsonLine(line: string, sessionId: string): TranscriptChun
   if (typeof parsed !== 'object' || parsed === null) return null;
   const obj = parsed as Record<string, unknown>;
 
+  if (agent === 'antigravity') return parseAntigravityLine(obj, sessionId, state);
+
   switch (obj.type) {
     case 'stream_event': {
       // Token-level delta, only present with --include-partial-messages.
@@ -299,14 +352,15 @@ export function parseNdjsonLine(line: string, sessionId: string): TranscriptChun
       if (event?.type !== 'content_block_delta') return null;
       const delta = event.delta as Record<string, unknown> | undefined;
       if (delta?.type !== 'text_delta' || typeof delta.text !== 'string') return null;
+      state.accumulatedText += delta.text;
       return {
         sessionId,
         done: false,
         message: {
-          id: randomUUID(),
+          id: state.id,
           role: 'agent',
           timestamp: new Date().toISOString(),
-          content: delta.text,
+          content: state.accumulatedText,
           status: 'streaming',
         },
       };
@@ -323,14 +377,15 @@ export function parseNdjsonLine(line: string, sessionId: string): TranscriptChun
         .map((b) => b.text)
         .join('');
       if (text.length === 0) return null;
+      state.accumulatedText = text;
       return {
         sessionId,
         done: false,
         message: {
-          id: randomUUID(),
+          id: state.id,
           role: 'agent',
           timestamp: new Date().toISOString(),
-          content: text,
+          content: state.accumulatedText,
           status: 'streaming',
         },
       };
@@ -339,11 +394,17 @@ export function parseNdjsonLine(line: string, sessionId: string): TranscriptChun
     case 'result': {
       const success = obj.subtype === 'success';
       const resultText = typeof obj.result === 'string' ? obj.result : '';
+      if (resultText.length > 0) {
+        state.accumulatedText = resultText;
+      }
+      // else: some non-success subtypes (e.g. error_max_turns) may carry no
+      // `result` text — fall back to whatever was accumulated from deltas
+      // rather than blanking out a partial reply the user already saw.
       const message: TranscriptMessage = {
-        id: randomUUID(),
+        id: state.id,
         role: 'agent',
         timestamp: new Date().toISOString(),
-        content: resultText,
+        content: state.accumulatedText,
         status: success ? 'done' : 'error',
       };
       return { sessionId, message, done: true };
@@ -355,4 +416,93 @@ export function parseNdjsonLine(line: string, sessionId: string): TranscriptChun
       // message_stop) are metadata, not transcript content.
       return null;
   }
+}
+
+/**
+ * Parses one line of `agy --output-format stream-json --print=<prompt>`'s
+ * NDJSON stdout. Verified live on this VPS (2026-09-03) against a real
+ * `agy` call — shape is completely unrelated to claude's, keyed by `event`
+ * rather than `type`:
+ *
+ * - `{"event":"init","init":{...}}` — session metadata (cwd, available
+ *   tools, permission mode). Not transcript content — ignored.
+ * - `{"event":"step_update","step_update":{"step_type":"user_input",
+ *   "state":"DONE"}}` — echoes the input step; no text. Ignored.
+ * - `{"event":"step_update","step_update":{"step_type":"agent_response",
+ *   "state":"ACTIVE"|"DONE","text_delta":"..."}}` — one streamed text
+ *   chunk (both the `"ACTIVE"` chunks mid-response and the final
+ *   `"DONE"` chunk for this step carry a `text_delta` to append — unlike
+ *   claude, there is no separate "full text so far" event, only deltas).
+ *   Note `step_type` can presumably be values other than `agent_response`/
+ *   `user_input` for tool-use turns — not observed yet (this VPS's smoke
+ *   test used a plain text prompt), so any `step_update` without a string
+ *   `text_delta` is safely ignored here rather than guessed at.
+ * - `{"event":"result","result":{"status":"SUCCESS"|other,"response":
+ *   "..."}}` — the turn is fully done; `status !== "SUCCESS"` (exact other
+ *   values not yet observed) is treated as `status: 'error'`. `response`
+ *   is the full final text, overwriting the accumulator (safe/idempotent,
+ *   same reasoning as claude's `result` event).
+ * - Anything else (unrecognized `event` value) — metadata, ignored.
+ */
+function parseAntigravityLine(
+  obj: Record<string, unknown>,
+  sessionId: string,
+  state: TurnParseState,
+): TranscriptChunkPayload | null {
+  switch (obj.event) {
+    case 'step_update': {
+      const stepUpdate = obj.step_update as Record<string, unknown> | undefined;
+      const textDelta = stepUpdate?.text_delta;
+      if (typeof textDelta !== 'string' || textDelta.length === 0) return null;
+      state.accumulatedText += textDelta;
+      return {
+        sessionId,
+        done: false,
+        message: {
+          id: state.id,
+          role: 'agent',
+          timestamp: new Date().toISOString(),
+          content: state.accumulatedText,
+          status: 'streaming',
+        },
+      };
+    }
+
+    case 'result': {
+      const result = obj.result as Record<string, unknown> | undefined;
+      const success = result?.status === 'SUCCESS';
+      const responseText = typeof result?.response === 'string' ? result.response : '';
+      if (responseText.length > 0) {
+        state.accumulatedText = responseText;
+      }
+      const message: TranscriptMessage = {
+        id: state.id,
+        role: 'agent',
+        timestamp: new Date().toISOString(),
+        content: state.accumulatedText,
+        status: success ? 'done' : 'error',
+      };
+      return { sessionId, message, done: true };
+    }
+
+    default:
+      // 'init' and any other/unrecognized event value — metadata.
+      return null;
+  }
+}
+
+/**
+ * Returns a stateful line-parsing function scoped to one spawned turn: it
+ * mints a single `randomUUID()` message id up front and closes over an
+ * accumulator, so every `TranscriptChunkPayload` it returns for this turn
+ * shares that one id and carries the full text accumulated so far (see
+ * `parseNdjsonLine`'s doc for why). Call once per `spawnAgentInTmuxWindow`
+ * invocation (i.e. once per turn/subprocess), not once per line.
+ */
+export function createTurnParser(
+  sessionId: string,
+  agent: AgentKind = 'claude-code',
+): (line: string) => TranscriptChunkPayload | null {
+  const state: TurnParseState = { id: randomUUID(), accumulatedText: '' };
+  return (line: string) => parseNdjsonLine(line, sessionId, state, agent);
 }

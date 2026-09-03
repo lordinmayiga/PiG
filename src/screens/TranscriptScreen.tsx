@@ -148,6 +148,13 @@ export default function TranscriptScreen() {
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
   const streamTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const { client } = useBridge();
+  // Track B placeholder-swap fix (REAL_AGENT_CONNECTION_PLAN.md §3a.1): the
+  // optimistic local `agentReply` bubble appended in `handleSend` has a
+  // client-generated id (`local-msg-N`) that a real server-streamed
+  // `transcript_chunk` will never share. Keyed by sessionId so a stale
+  // pending id from a previous session (or a fast session switch) can never
+  // clobber the wrong transcript's placeholder.
+  const pendingPlaceholderIdRef = useRef<Record<string, string | undefined>>({});
 
   const flatListRef = useRef<FlatList<TranscriptMessage>>(null);
   const isNearBottomRef = useRef(true);
@@ -229,11 +236,26 @@ export default function TranscriptScreen() {
     const unsubscribeChunk = client.onTranscriptChunk((chunk) => {
       if (chunk.sessionId !== sessionId) return;
       setMessages((prev) => {
-        const existingIndex = prev.findIndex((m) => m.id === chunk.message.id);
-        const next =
-          existingIndex === -1
-            ? [...prev, chunk.message]
-            : prev.map((m, i) => (i === existingIndex ? chunk.message : m));
+        const pendingPlaceholderId = pendingPlaceholderIdRef.current[sessionId];
+        let next: TranscriptMessage[];
+        if (pendingPlaceholderId) {
+          // First live chunk for this turn: replace the optimistic
+          // placeholder bubble in place (by index) instead of upserting by
+          // id, since the placeholder's client-generated id never matches
+          // the server-generated message id the chunk carries.
+          const placeholderIndex = prev.findIndex((m) => m.id === pendingPlaceholderId);
+          next =
+            placeholderIndex === -1
+              ? [...prev, chunk.message]
+              : prev.map((m, i) => (i === placeholderIndex ? chunk.message : m));
+          pendingPlaceholderIdRef.current[sessionId] = undefined;
+        } else {
+          const existingIndex = prev.findIndex((m) => m.id === chunk.message.id);
+          next =
+            existingIndex === -1
+              ? [...prev, chunk.message]
+              : prev.map((m, i) => (i === existingIndex ? chunk.message : m));
+        }
         if (chunk.done) void replaceAll(sessionId, next);
         return next;
       });
@@ -303,10 +325,24 @@ export default function TranscriptScreen() {
       isNearBottomRef.current = true;
       setMessages((prev) => [...prev, userMessage, agentReply]);
       void appendAndPersist(sessionId, [userMessage, agentReply]);
-      streamAgentReply(replyId);
+      if (client) {
+        // Real backend path (§3a.1/§4 Track B): the placeholder bubble
+        // above is replaced in place once the first real `transcript_chunk`
+        // for this turn arrives — see `pendingPlaceholderIdRef` and the
+        // `onTranscriptChunk` handler above.
+        pendingPlaceholderIdRef.current[sessionId] = replyId;
+        client.sendRouteInput({
+          sessionId,
+          text,
+          attachmentIds: attachments.map((a) => a.id),
+        });
+      } else {
+        // No-backend dev/demo fallback only.
+        streamAgentReply(replyId);
+      }
       setTimeout(() => scrollToBottom(true), 50);
     },
-    [sessionId, streamAgentReply, scrollToBottom],
+    [sessionId, client, streamAgentReply, scrollToBottom],
   );
 
   const renderEmptyTranscript = () => {

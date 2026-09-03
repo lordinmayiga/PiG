@@ -36,12 +36,16 @@ import type {
   ResyncSnapshotPayload,
   SessionListUpdatePayload,
   ActionResultPayload,
+  TranscriptChunkPayload,
+  TranscriptMessage,
   BridgeError,
 } from '../../src/types/index.js';
 import { listTmuxSessions } from './tmux.js';
 import { isValidBridgeToken, verifyAndConsumePairingToken } from './auth.js';
 import { classify, routeInput } from './routeInput.js';
 import { proposeAction, confirmAction } from './actions.js';
+import { spawnAgentInTmuxWindow } from './agentProcess.js';
+import { getOrCreateSession, appendTurn, getTranscript, setActiveHandle } from './sessionRegistry.js';
 
 const PORT = Number(process.env.PIG_BRIDGE_PORT ?? 8787);
 
@@ -86,13 +90,18 @@ async function handleHello(ws: WebSocket, envelope: Envelope<HelloPayload>): Pro
 
 async function handleResyncRequest(ws: WebSocket, envelope: Envelope<ResyncRequestPayload>): Promise<void> {
   const sessions = await listTmuxSessions();
-  // Per-session transcript resync (payload.sessionId set) needs
-  // agentProcess.ts's session/transcript registry, which doesn't exist yet —
-  // only the session list is real for now; `transcript`/`syncCursor` stay
-  // omitted. Revisit once that registry lands.
+  // Per-session transcript resync (payload.sessionId set) now reads
+  // sessionRegistry.ts's live, in-memory transcript (populated by
+  // handleRouteInput's agent spawn below). `undefined` (not `[]`) when the
+  // registry has never seen this session — matches getTranscript's contract
+  // and lets the client fall back to its own cache rather than treating an
+  // unknown session as "confirmed empty".
+  const requestedSessionId = envelope.payload.sessionId;
+  const transcript = requestedSessionId ? getTranscript(requestedSessionId) : undefined;
   const payload: ResyncSnapshotPayload = {
     sessions,
-    ...(envelope.payload.sessionId ? { sessionId: envelope.payload.sessionId } : {}),
+    ...(requestedSessionId ? { sessionId: requestedSessionId } : {}),
+    ...(transcript ? { transcript, syncCursor: transcript[transcript.length - 1]?.id } : {}),
   };
   send(ws, 'resync_snapshot', payload, envelope.sessionId, envelope.id);
 }
@@ -107,6 +116,76 @@ const ACTION_TYPE_TO_KIND: Record<string, 'kill_session' | 'create_session' | 's
   switch_session: 'switch_session',
   cd: 'cd',
 };
+
+/**
+ * Broadcasts a `transcript_chunk` to every authed socket (not just the
+ * sender) so any client with that session open sees the live turn — mirrors
+ * `session_list_update`'s broadcast-to-all-authed pattern below, since
+ * there's no per-socket session subscription list yet. The client already
+ * filters by `chunk.sessionId` (`TranscriptScreen.tsx`'s `onTranscriptChunk`
+ * handler), so an app instance not viewing this session harmlessly discards
+ * chunks that aren't for its open screen.
+ */
+function broadcastTranscriptChunk(payload: TranscriptChunkPayload): void {
+  for (const ws of authedSockets) {
+    send(ws, 'transcript_chunk', payload, payload.sessionId);
+  }
+}
+
+/**
+ * Fire-and-forget: spawns the agent CLI for a routed prompt and streams its
+ * output as `transcript_chunk` broadcasts, appending each message to
+ * `sessionRegistry` (REAL_AGENT_CONNECTION_PLAN.md §4 Track A step 3).
+ * Deliberately not awaited by `handleRouteInput` — the immediate
+ * `action_result: prompt_routed` reply (asserted by
+ * `bridge-e2e.test.ts`'s existing lifecycle test) must not block on a whole
+ * agent turn, which can take many seconds.
+ *
+ * `cwd`/`agent` are resolved from the live tmux session list (not just
+ * whatever was previously registered) so a session's actual current working
+ * directory/agent-kind heuristic (`tmux.ts`'s doc explains the agent-kind
+ * guess) seeds the registry the first time this session sends a prompt.
+ */
+async function spawnAndStreamTurn(sessionId: string, prompt: string): Promise<void> {
+  const sessions = await listTmuxSessions();
+  const tmuxSession = sessions.find((s) => s.id === sessionId || s.name === sessionId);
+  if (!tmuxSession) {
+    console.error(`[pig-bridge] spawnAndStreamTurn: session "${sessionId}" not found in tmux, skipping agent spawn`);
+    return;
+  }
+
+  const ctx = getOrCreateSession(sessionId, tmuxSession.folder, tmuxSession.agent);
+
+  const userMessage: TranscriptMessage = {
+    id: randomUUID(),
+    role: 'user',
+    timestamp: new Date().toISOString(),
+    content: prompt,
+  };
+  appendTurn(sessionId, userMessage);
+
+  const handle = spawnAgentInTmuxWindow({
+    sessionName: sessionId,
+    windowName: `turn-${Date.now()}`,
+    cwd: ctx.cwd,
+    agent: ctx.agent,
+    prompt,
+    onChunk: (chunk) => {
+      appendTurn(sessionId, chunk.message);
+      broadcastTranscriptChunk(chunk);
+      if (chunk.done) {
+        setActiveHandle(sessionId, undefined);
+      }
+    },
+    onExit: (code) => {
+      if (code !== 0) {
+        console.error(`[pig-bridge] agent process for session "${sessionId}" exited with code ${code}`);
+      }
+      setActiveHandle(sessionId, undefined);
+    },
+  });
+  setActiveHandle(sessionId, handle);
+}
 
 async function handleRouteInput(ws: WebSocket, envelope: Envelope<RouteInputPayload>): Promise<void> {
   const { text, sessionId } = envelope.payload;
@@ -126,6 +205,16 @@ async function handleRouteInput(ws: WebSocket, envelope: Envelope<RouteInputPayl
     result = await routeInput(envelope.payload, envelope.id);
   }
   send(ws, 'action_result', result, envelope.sessionId, envelope.id);
+
+  // Side effect, not part of the response above: a successfully-routed
+  // prompt also spawns the real agent turn and streams it. Not awaited —
+  // see spawnAndStreamTurn's doc for why the action_result reply above must
+  // stay immediate.
+  if (result.kind === 'prompt_routed' && result.cleanedPrompt) {
+    void spawnAndStreamTurn(sessionId, result.cleanedPrompt).catch((err: unknown) => {
+      console.error(`[pig-bridge] spawnAndStreamTurn failed for session "${sessionId}":`, err);
+    });
+  }
 }
 
 async function handleActionConfirm(ws: WebSocket, envelope: Envelope<ActionConfirmPayload>): Promise<void> {

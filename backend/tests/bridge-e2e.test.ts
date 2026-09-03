@@ -10,15 +10,16 @@ import type {
   RouteInputPayload,
   ActionConfirmPayload,
   ActionResultPayload,
+  TranscriptChunkPayload,
 } from '../../src/types/index.js';
 
 const WS_URL = 'ws://127.0.0.1:8787';
 
-function waitForEnvelope<T = unknown>(ws: WebSocket, expectedType?: string): Promise<Envelope<T>> {
+function waitForEnvelope<T = unknown>(ws: WebSocket, expectedType?: string, timeoutMs = 5000): Promise<Envelope<T>> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error(`Timeout waiting for message${expectedType ? ` of type ${expectedType}` : ''}`)),
-      5000,
+      timeoutMs,
     );
     const handler = (data: unknown) => {
       try {
@@ -40,6 +41,49 @@ function waitForEnvelope<T = unknown>(ws: WebSocket, expectedType?: string): Pro
       ws.off('message', handler);
       reject(err);
     });
+  });
+}
+
+/**
+ * Collects every `transcript_chunk` envelope for `sessionId` until one
+ * arrives with `payload.done === true` (inclusive), or `timeoutMs` elapses.
+ * A real `claude --print` turn streams multiple chunks before completing,
+ * so this can't reuse `waitForEnvelope`'s "resolve on first match" shape.
+ */
+function collectTranscriptChunksUntilDone(
+  ws: WebSocket,
+  sessionId: string,
+  timeoutMs = 45000,
+): Promise<Envelope<TranscriptChunkPayload>[]> {
+  return new Promise((resolve, reject) => {
+    const collected: Envelope<TranscriptChunkPayload>[] = [];
+    const timer = setTimeout(() => {
+      ws.off('message', handler);
+      reject(
+        new Error(
+          `Timeout waiting for a done:true transcript_chunk for session "${sessionId}" (collected ${collected.length} chunks so far)`,
+        ),
+      );
+    }, timeoutMs);
+    const handler = (data: unknown) => {
+      let parsed: Envelope<TranscriptChunkPayload>;
+      try {
+        parsed = JSON.parse(String(data)) as Envelope<TranscriptChunkPayload>;
+      } catch (err) {
+        clearTimeout(timer);
+        ws.off('message', handler);
+        reject(err);
+        return;
+      }
+      if (parsed.type !== 'transcript_chunk' || parsed.payload.sessionId !== sessionId) return;
+      collected.push(parsed);
+      if (parsed.payload.done) {
+        clearTimeout(timer);
+        ws.off('message', handler);
+        resolve(collected);
+      }
+    };
+    ws.on('message', handler);
   });
 }
 
@@ -249,6 +293,134 @@ test('E2E: Session Lifecycle — Create session, send agent message, and kill se
     const sessionFound = snapshot.payload.sessions.some((s) => s.name === testSessionName);
     assert.equal(sessionFound, false, `Killed session "${testSessionName}" must no longer exist in tmux`);
     console.log(`[E2E Test] Verified session "${testSessionName}" was cleanly terminated.`);
+  });
+
+  ws.close();
+});
+
+test('E2E: Live agent turn streams real transcript_chunk envelopes', { timeout: 60000 }, async (t) => {
+  const { token } = mintPairingToken();
+  const ws = new WebSocket(WS_URL);
+  await new Promise((resolve) => ws.once('open', resolve));
+
+  ws.send(
+    JSON.stringify({
+      v: 1,
+      type: 'hello',
+      id: 'test-hello-stream',
+      ts: Date.now(),
+      payload: { token },
+    }),
+  );
+  await waitForEnvelope(ws, 'hello_ack');
+
+  const testSessionName = `pig_test_stream_${Date.now()}`;
+
+  await t.test(`creates scratch session "${testSessionName}"`, async () => {
+    ws.send(
+      JSON.stringify({
+        v: 1,
+        type: 'route_input',
+        id: 'test-stream-create-sess',
+        ts: Date.now(),
+        sessionId: testSessionName,
+        payload: { sessionId: testSessionName, text: `new session ${testSessionName}` },
+      }),
+    );
+    const createRes = await waitForEnvelope<ActionResultPayload>(ws, 'action_result');
+    assert.equal(createRes.payload.kind, 'action_executed');
+    // Give tmux a moment to establish the session before spawning the agent
+    // subprocess into it (spawnAgentInTmuxWindow's mirror window needs the
+    // tmux session to already exist).
+    await new Promise((r) => setTimeout(r, 250));
+  });
+
+  let chunks: Envelope<TranscriptChunkPayload>[] = [];
+
+  await t.test('sends a deterministic prompt and streams real transcript_chunk envelopes', async () => {
+    const promptText = 'Reply with exactly the single word PONG and nothing else.';
+
+    // Start collecting transcript_chunk envelopes for this session BEFORE
+    // sending the prompt, so no early chunk can race ahead of the listener.
+    const collectPromise = collectTranscriptChunksUntilDone(ws, testSessionName, 45000);
+
+    ws.send(
+      JSON.stringify({
+        v: 1,
+        type: 'route_input',
+        id: 'test-stream-prompt',
+        ts: Date.now(),
+        sessionId: testSessionName,
+        payload: { sessionId: testSessionName, text: promptText },
+      }),
+    );
+
+    // The action_result reply must still arrive immediately as
+    // `prompt_routed` — server.ts's contract from the existing lifecycle
+    // test above must be unchanged by the agent-spawn side effect.
+    const routedRes = await waitForEnvelope<ActionResultPayload>(ws, 'action_result');
+    assert.equal(routedRes.payload.kind, 'prompt_routed');
+    assert.equal((routedRes.payload as { cleanedPrompt: string }).cleanedPrompt, promptText);
+
+    chunks = await collectPromise;
+    console.log(`[E2E Test] Collected ${chunks.length} transcript_chunk envelope(s) for "${testSessionName}".`);
+
+    assert.ok(chunks.length >= 1, 'at least one transcript_chunk must arrive');
+    const last = chunks[chunks.length - 1]!;
+    assert.equal(last.payload.done, true, 'the final collected chunk must have done: true');
+    assert.ok(
+      last.payload.message.status === 'done' || last.payload.message.status === 'error',
+      `final message status must be a terminal state, got "${last.payload.message.status}"`,
+    );
+    assert.ok(last.payload.message.content.length > 0, 'final message content must be non-empty');
+
+    // Regression test for the turn-id/accumulation bug
+    // (REAL_AGENT_CONNECTION_PLAN.md §3a.2): every chunk for one turn must
+    // share the same message id, not a fresh id per streamed token.
+    const ids = new Set(chunks.map((c) => c.payload.message.id));
+    assert.equal(ids.size, 1, `all chunks for one turn must share a single message id, got ${ids.size} distinct ids`);
+  });
+
+  await t.test('resync_request now returns the completed turn from sessionRegistry', async () => {
+    ws.send(
+      JSON.stringify({
+        v: 1,
+        type: 'resync_request',
+        id: 'test-stream-resync',
+        ts: Date.now(),
+        payload: { sessionId: testSessionName },
+      }),
+    );
+    const snapshot = await waitForEnvelope<ResyncSnapshotPayload>(ws, 'resync_snapshot');
+    assert.ok(Array.isArray(snapshot.payload.transcript), 'resync_snapshot must include a real transcript array');
+    const finalMessageId = chunks[chunks.length - 1]!.payload.message.id;
+    const found = snapshot.payload.transcript!.some((m) => m.id === finalMessageId);
+    assert.ok(found, 'the completed turn must be present in sessionRegistry-backed resync_snapshot.transcript');
+  });
+
+  await t.test(`cleans up scratch session "${testSessionName}"`, async () => {
+    ws.send(
+      JSON.stringify({
+        v: 1,
+        type: 'route_input',
+        id: 'test-stream-kill-prop',
+        ts: Date.now(),
+        sessionId: testSessionName,
+        payload: { sessionId: testSessionName, text: 'kill session' },
+      }),
+    );
+    const killProposal = await waitForEnvelope<ActionResultPayload>(ws, 'action_result');
+    ws.send(
+      JSON.stringify({
+        v: 1,
+        type: 'action_confirm',
+        id: 'test-stream-kill-confirm',
+        ts: Date.now(),
+        sessionId: testSessionName,
+        payload: { actionId: killProposal.payload.requestId, confirmed: true },
+      }),
+    );
+    await waitForEnvelope<ActionResultPayload>(ws, 'action_result');
   });
 
   ws.close();
