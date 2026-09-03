@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 
 import { useTheme } from '../theme';
 import type { LucideIconComponent } from '../theme/icons';
 import { Icon } from '../theme/icons';
+import { usePressScale } from '../theme/motion';
 
 interface SettingsRowProps {
   icon: LucideIconComponent;
@@ -23,6 +25,7 @@ interface SettingsRowProps {
  */
 export function SettingsRow({ icon, label, value, trailing, onPress, disabled }: SettingsRowProps) {
   const { colors, spacing, typeScale, minTouchTarget, fontFamily, maxFontScale } = useTheme();
+  const { style: pressStyle, pressProps } = usePressScale();
 
   const content = (
     <View style={[styles.row, { minHeight: minTouchTarget, paddingVertical: spacing.sm, gap: spacing.sm }]}>
@@ -63,9 +66,9 @@ export function SettingsRow({ icon, label, value, trailing, onPress, disabled }:
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={label}
-      style={({ pressed }) => [pressed && !disabled ? { opacity: 0.6 } : null]}
+      {...pressProps}
     >
-      {content}
+      <Animated.View style={disabled ? undefined : pressStyle}>{content}</Animated.View>
     </Pressable>
   );
 }
