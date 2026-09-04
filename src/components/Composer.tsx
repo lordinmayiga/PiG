@@ -9,6 +9,7 @@ import { Icon, useTheme } from '../theme';
 import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
 import { sendRouteInput, classifyLocally, type RouteInputAction } from '../network/routeInput';
 import { getBridgeClient } from '../network/bridgeConnection';
+import { loadBridgeCredentials, clearBridgeCredentials } from '../secureStorage';
 import type { FileAttachment } from '../types';
 
 export interface ComposerAttachment extends FileAttachment {
@@ -16,7 +17,7 @@ export interface ComposerAttachment extends FileAttachment {
   uri?: string;
 }
 
-interface ComposerProps {
+export interface ComposerProps {
   /** The session this composer is submitting into — threaded through to
    * `sendRouteInput`'s `route_input` envelope so the backend/mock knows
    * which session's turn this is. Optional only for call sites that don't
@@ -24,7 +25,7 @@ interface ComposerProps {
    * sessionId, which the backend would reject as malformed once it's real. */
   sessionId?: string;
   /** Called with the cleaned-up prompt text once `/route-input` classifies a submission as an agent prompt. */
-  onSend: (text: string, attachments: ComposerAttachment[]) => void;
+  onSend: (text: string, attachments: ComposerAttachment[], alreadySent?: boolean) => void;
   /**
    * Called when `/route-input` classifies a submission as an environment
    * command (kill/new/switch session, etc), after the user has confirmed it
@@ -134,6 +135,31 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
 
   const handleSend = async () => {
     if (!canSend) return;
+
+    // Verify pairing credentials exist in storage
+    const creds = await loadBridgeCredentials();
+    if (!creds || !creds.token) {
+      const msg = 'Session expired. Please reconnect to your VPS.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Session expired', msg);
+      }
+      await clearBridgeCredentials();
+      return;
+    }
+
+    const client = getBridgeClient();
+    if (!client || client.getStatus() !== 'connected') {
+      const msg = 'Disconnected from VPS. Reconnect to send messages.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Disconnected', msg);
+      }
+      return;
+    }
+
     const submittedText = text.trim();
     const submittedAttachments = attachments;
     // Clear the composer immediately — routing happens against a snapshot
@@ -151,10 +177,10 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
               text: 'Confirm',
               style: 'destructive',
               onPress: () => {
-                const client = getBridgeClient();
+                const actionClient = getBridgeClient();
                 const actionId = result.action.params?.actionId as string | undefined;
-                if (client && actionId) {
-                  client.sendActionConfirm({ actionId, confirmed: true }, sessionId);
+                if (actionClient && actionId) {
+                  actionClient.sendActionConfirm({ actionId, confirmed: true }, sessionId);
                 }
                 runAction(result.action, submittedText, submittedAttachments);
               },
@@ -166,8 +192,9 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
         return;
       }
 
-      // Normal prompt: post to the screen
-      onSend(result.cleanedText || submittedText, submittedAttachments);
+      // Normal prompt: post to the screen, marking alreadySent: true since
+      // sendRouteInput has already dispatched the route_input envelope to the bridge.
+      onSend(result.cleanedText || submittedText, submittedAttachments, true);
     } catch (err) {
       console.error('[Composer] Failed to route input:', err);
       const errorMessage = err instanceof Error ? err.message : 'Failed to send input';

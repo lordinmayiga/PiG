@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react';
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
-import { Download, File, FileText, X } from 'lucide-react-native';
+import { Download, File, FileText, Globe, Maximize2, Minimize2, X } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
 
 import { Icon, useTheme } from '../theme';
 import { isReduceMotionEnabled } from '../theme/motion';
 import { monoFontFallback, monoFontFamily, useMonoFont } from './monoFont';
+import { MarkdownBody } from './MarkdownBody';
+import { useBridge } from '../contexts/BridgeContext';
 
 /** Damped-spring feel for the sheet entrance/dismiss, per pig-motion's sheet convention. */
 const SHEET_SPRING = { damping: 20, stiffness: 140, mass: 0.8 };
@@ -48,29 +51,71 @@ function formatBytes(bytes?: number): string {
 /**
  * Shared in-chat / file-explorer viewer, split by type per SPEC.md §6.1 and
  * pig-markdown-rendering: image → full-screen lightbox, text/code →
- * monospace read-only, anything else → metadata + Download only (stubbed —
- * no real OS share-sheet wiring yet).
+ * monospace or markdown preview, anything else → metadata + Download.
  */
 export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetProps) {
   const { colors, spacing, radius, typeScale } = useTheme();
   const monoLoaded = useMonoFont();
+  const navigation = useNavigation<any>();
+  const { client } = useBridge();
+
   const [toastVisible, setToastVisible] = useState(false);
-  // Reset the toast when a new file opens, without an effect (react-hooks/set-state-in-effect) —
-  // adjust state during render by comparing against the last-seen file path.
+  const [fullscreen, setFullscreen] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+
+  // Reset states when a new file opens
   const [lastFilePath, setLastFilePath] = useState(file?.path);
   if (file?.path !== lastFilePath) {
     setLastFilePath(file?.path);
     if (toastVisible) setToastVisible(false);
+    if (fullscreen) setFullscreen(false);
+    if (showRaw) setShowRaw(false);
   }
+
+  const isMarkdown =
+    file?.kind === 'text' &&
+    (file.mimeType === 'text/markdown' ||
+      file.name.toLowerCase().endsWith('.md') ||
+      file.name.toLowerCase().endsWith('.markdown'));
+
+  const isHtml =
+    file?.mimeType === 'text/html' ||
+    file?.name.toLowerCase().endsWith('.html') ||
+    file?.name.toLowerCase().endsWith('.htm');
 
   const handleDownload = () => {
     setToastVisible(true);
     setTimeout(() => setToastVisible(false), 2000);
   };
 
-  // Drag-down-to-dismiss for the (non-image) bottom sheet — a Reanimated
-  // shared value driven both by the entrance/dismiss animations below and
-  // by the pan gesture's live drag offset.
+  const handleOpenInBrowser = async () => {
+    if (!file) return;
+    try {
+      let targetUrl = '';
+      if (client) {
+        try {
+          targetUrl = await client.getRawFileUrl(file.path);
+        } catch {
+          // Fallback if request fails
+        }
+      }
+      if (!targetUrl) {
+        targetUrl = `http://localhost:8787/files/raw?path=${encodeURIComponent(file.path)}`;
+      }
+      onClose();
+      // Navigate to Browser tab
+      const parent = navigation.getParent();
+      if (parent) {
+        parent.navigate('Browser', { initialUrl: targetUrl });
+      } else {
+        navigation.navigate('Browser', { initialUrl: targetUrl });
+      }
+    } catch (err) {
+      console.error('Failed to open in browser:', err);
+    }
+  };
+
+  // Drag-down-to-dismiss for the bottom sheet
   const sheetTranslateY = useSharedValue(0);
   const dragStartY = useSharedValue(0);
 
@@ -104,7 +149,13 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
     })
     .onEnd((event) => {
       if (sheetTranslateY.value > DISMISS_THRESHOLD || event.velocityY > DISMISS_VELOCITY) {
-        runOnJS(dismissViaGesture)();
+        if (fullscreen) {
+          // First drag down collapses fullscreen back to sheet
+          runOnJS(setFullscreen)(false);
+          sheetTranslateY.value = withSpring(0, SHEET_SPRING);
+        } else {
+          runOnJS(dismissViaGesture)();
+        }
       } else {
         sheetTranslateY.value = withSpring(0, SHEET_SPRING);
       }
@@ -118,7 +169,7 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <View style={[styles.scrim, { backgroundColor: colors.scrim }]}>
+      <View style={[styles.scrim, { backgroundColor: colors.scrim }, fullscreen && styles.scrimFullscreen]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close file viewer" />
 
         {file.kind === 'image' ? (
@@ -147,22 +198,63 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
             </Pressable>
           </View>
         ) : (
-          // GestureHandlerRootView is required here (not just once at the app root) because
-          // react-native-gesture-handler needs its own root inside a native Modal on iOS.
-          <GestureHandlerRootView style={styles.sheetGestureRoot}>
+          <GestureHandlerRootView style={[styles.sheetGestureRoot, fullscreen && styles.sheetGestureRootFullscreen]}>
             <GestureDetector gesture={panGesture}>
               <Animated.View
+                testID="file-viewer-sheet"
                 style={[
                   styles.sheet,
+                  fullscreen
+                    ? styles.sheetFullscreen
+                    : {
+                        borderTopLeftRadius: radius.sheet,
+                        borderTopRightRadius: radius.sheet,
+                      },
                   sheetDragStyle,
-                  { backgroundColor: colors.elevated, borderTopLeftRadius: radius.sheet, borderTopRightRadius: radius.sheet },
+                  { backgroundColor: colors.elevated },
                 ]}
               >
-                <View style={[styles.dragHandle, { backgroundColor: colors.border }]} />
-                <View style={[styles.sheetHeader, { paddingHorizontal: spacing.md, paddingTop: spacing.xxs }]}>
+                {!fullscreen && <View style={[styles.dragHandle, { backgroundColor: colors.border }]} />}
+                <View style={[styles.sheetHeader, { paddingHorizontal: spacing.md, paddingTop: fullscreen ? spacing.md : spacing.xxs }]}>
                   <Text style={[typeScale.subheading, { color: colors.ink, flex: 1 }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
                     {file.name}
                   </Text>
+
+                  {isMarkdown && (
+                    <View style={[styles.pillContainer, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                      <Pressable
+                        onPress={() => setShowRaw(false)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Preview"
+                        style={[styles.pillButton, !showRaw && { backgroundColor: colors.accent }]}
+                      >
+                        <Text style={[typeScale.caption, { color: !showRaw ? colors.onAccent : colors.inkSecondary }]}>
+                          Preview
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => setShowRaw(true)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Raw"
+                        style={[styles.pillButton, showRaw && { backgroundColor: colors.accent }]}
+                      >
+                        <Text style={[typeScale.caption, { color: showRaw ? colors.onAccent : colors.inkSecondary }]}>
+                          Raw
+                        </Text>
+                      </Pressable>
+                    </View>
+                  )}
+
+                  <Pressable
+                    onPress={() => setFullscreen((prev) => !prev)}
+                    accessibilityRole="button"
+                    accessibilityLabel={fullscreen ? 'Collapse to sheet' : 'Expand to fullscreen'}
+                    hitSlop={12}
+                    style={{ marginHorizontal: spacing.xs }}
+                  >
+                    <Icon icon={fullscreen ? Minimize2 : Maximize2} size={20} color={colors.inkSecondary} />
+                  </Pressable>
+
                   <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" hitSlop={12}>
                     <Icon icon={X} size={24} color={colors.inkSecondary} />
                   </Pressable>
@@ -170,27 +262,36 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
 
                 {file.kind === 'text' ? (
                   <ScrollView
-                    style={{
-                      maxHeight: 420,
-                      margin: spacing.md,
-                      backgroundColor: colors.canvas,
-                      borderRadius: radius.chip,
-                      borderWidth: StyleSheet.hairlineWidth,
-                      borderColor: colors.border,
-                    }}
+                    style={[
+                      styles.textScroller,
+                      fullscreen ? styles.textScrollerFullscreen : { maxHeight: 420 },
+                      {
+                        margin: spacing.md,
+                        backgroundColor: colors.canvas,
+                        borderRadius: radius.chip,
+                        borderWidth: StyleSheet.hairlineWidth,
+                        borderColor: colors.border,
+                      },
+                    ]}
                   >
-                    <ScrollView horizontal>
-                      <Text
-                        selectable
-                        style={[
-                          styles.codeText,
-                          { color: colors.ink, padding: spacing.sm, fontFamily: monoLoaded ? monoFontFamily.regular : monoFontFallback },
-                        ]}
-                        maxFontSizeMultiplier={1.3}
-                      >
-                        {textContent ?? ''}
-                      </Text>
-                    </ScrollView>
+                    {isMarkdown && !showRaw ? (
+                      <View style={{ padding: spacing.sm }} testID="formatted-markdown-body">
+                        <MarkdownBody content={textContent ?? ''} />
+                      </View>
+                    ) : (
+                      <ScrollView horizontal testID="raw-markdown-source">
+                        <Text
+                          selectable
+                          style={[
+                            styles.codeText,
+                            { color: colors.ink, padding: spacing.sm, fontFamily: monoLoaded ? monoFontFamily.regular : monoFontFallback },
+                          ]}
+                          maxFontSizeMultiplier={1.3}
+                        >
+                          {textContent ?? ''}
+                        </Text>
+                      </ScrollView>
+                    )}
                   </ScrollView>
                 ) : (
                   <View style={{ padding: spacing.md, gap: spacing.xs }}>
@@ -211,20 +312,53 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
                   </View>
                 )}
 
-                <Pressable
-                  onPress={handleDownload}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Download ${file.name}`}
-                  style={[
-                    styles.downloadButton,
-                    { backgroundColor: colors.accent, borderRadius: radius.pill, margin: spacing.md, marginTop: file.kind === 'text' ? 0 : spacing.xs },
-                  ]}
-                >
-                  <Icon icon={Download} size={20} color={colors.onAccent} />
-                  <Text style={[typeScale.label, { color: colors.onAccent, marginLeft: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
-                    Download
-                  </Text>
-                </Pressable>
+                <View style={styles.actionRow}>
+                  {isHtml && (
+                    <Pressable
+                      onPress={handleOpenInBrowser}
+                      accessibilityRole="button"
+                      accessibilityLabel="Open in browser"
+                      style={[
+                        styles.actionButton,
+                        styles.openBrowserButton,
+                        {
+                          borderColor: colors.accent,
+                          borderRadius: radius.pill,
+                          backgroundColor: colors.canvas,
+                          marginHorizontal: spacing.md,
+                          marginBottom: spacing.xs,
+                        },
+                      ]}
+                    >
+                      <Icon icon={Globe} size={16} color={colors.accent} />
+                      <Text style={[typeScale.label, { color: colors.accent, marginLeft: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
+                        Open in browser
+                      </Text>
+                    </Pressable>
+                  )}
+
+                  <Pressable
+                    onPress={handleDownload}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Download ${file.name}`}
+                    style={[
+                      styles.actionButton,
+                      styles.downloadButton,
+                      {
+                        backgroundColor: colors.accent,
+                        borderRadius: radius.pill,
+                        marginHorizontal: spacing.md,
+                        marginBottom: spacing.md,
+                        marginTop: file.kind === 'text' && !isHtml ? 0 : spacing.xs,
+                      },
+                    ]}
+                  >
+                    <Icon icon={Download} size={16} color={colors.onAccent} />
+                    <Text style={[typeScale.label, { color: colors.onAccent, marginLeft: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
+                      Download
+                    </Text>
+                  </Pressable>
+                </View>
 
                 {toastVisible ? (
                   <View style={[styles.toast, { backgroundColor: colors.ink, borderRadius: radius.chip, bottom: spacing.xxl }]}>
@@ -246,6 +380,9 @@ const styles = StyleSheet.create({
   scrim: {
     flex: 1,
     justifyContent: 'flex-end',
+  },
+  scrimFullscreen: {
+    justifyContent: 'flex-start',
   },
   lightbox: {
     flex: 1,
@@ -271,12 +408,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sheetGestureRoot: {
-    // Sizes to its Animated.View child, sitting at the bottom of the scrim
-    // (styles.scrim is justifyContent: 'flex-end') rather than filling the screen.
     flexShrink: 1,
+  },
+  sheetGestureRootFullscreen: {
+    flex: 1,
   },
   sheet: {
     maxHeight: '80%',
+  },
+  sheetFullscreen: {
+    flex: 1,
+    maxHeight: '100%',
+    height: '100%',
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
   },
   dragHandle: {
     alignSelf: 'center',
@@ -289,6 +434,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  pillContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+    marginRight: 8,
+  },
+  pillButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  textScroller: {},
+  textScrollerFullscreen: {
+    flex: 1,
+  },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -297,12 +459,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
   },
-  downloadButton: {
+  actionRow: {
+    marginTop: 4,
+  },
+  actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 12,
   },
+  openBrowserButton: {
+    borderWidth: 1,
+  },
+  downloadButton: {},
   toast: {
     position: 'absolute',
     alignSelf: 'center',

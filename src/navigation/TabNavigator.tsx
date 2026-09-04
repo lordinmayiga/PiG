@@ -12,7 +12,7 @@ import SessionsStackNavigator from './SessionsStackNavigator';
 // memory and the pig-navigation-structure skill); this supersedes any older
 // "Sessions | Browser | Settings" order shown in DESIGN.md.
 export type TabParamList = {
-  Browser: undefined;
+  Browser: { initialUrl?: string } | undefined;
   Sessions: undefined;
   Settings: undefined;
 };

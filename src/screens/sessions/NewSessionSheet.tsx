@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Rocket, SquareTerminal } from 'lucide-react-native';
@@ -112,7 +112,11 @@ export default function NewSessionSheet({ visible, onClose, onCreate }: NewSessi
       </ReanimatedAnimated.View>
       <ReanimatedAnimated.View style={[styles.sheet, sheetStyle]}>
         <KeyboardAvoidingView
-          behavior="padding"
+          // See TranscriptScreen's KeyboardAvoidingView comment: Android
+          // already resizes via windowSoftInputMode="adjustResize", so
+          // "padding" is iOS-only to avoid double-compensating and clipping
+          // the sheet's "Start session" button off-screen.
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={{
             backgroundColor: colors.elevated,
             borderTopLeftRadius: radius.sheet,

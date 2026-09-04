@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Text, View } from 'react-native';
 
 import { useTheme } from '../../theme';
@@ -5,6 +6,7 @@ import { PrimaryButton, TextField } from './SetupUI';
 import PairingTokenPanel from './PairingTokenPanel';
 import DevOutcomeSwitcher from './DevOutcomeSwitcher';
 import type { ConnectFormState, ConnectOutcome } from './types';
+import { validateHost } from './validateHost';
 
 interface ConnectStepProps {
   form: ConnectFormState;
@@ -26,6 +28,41 @@ export default function ConnectStep({
   onSubmit,
 }: ConnectStepProps) {
   const { colors, spacing, typeScale, maxFontScale } = useTheme();
+  const [hostError, setHostError] = useState<string | undefined>();
+
+  const handleHostChange = (host: string) => {
+    onFormChange({ ...form, host });
+    if (hostError) {
+      const res = validateHost(host);
+      if (res.valid) {
+        setHostError(undefined);
+      }
+    }
+  };
+
+  const handleHostBlur = () => {
+    if (!form.host.trim()) {
+      setHostError(undefined);
+      return;
+    }
+    const res = validateHost(form.host);
+    if (!res.valid) {
+      setHostError(res.error);
+    } else {
+      setHostError(undefined);
+    }
+  };
+
+  const handleConnect = () => {
+    console.log('[PiG Button] "Connect" clicked. Host:', form.host, 'Token:', form.token);
+    const res = validateHost(form.host);
+    if (!res.valid) {
+      setHostError(res.error);
+      return;
+    }
+    setHostError(undefined);
+    onSubmit({ ...form, host: res.cleanHost ?? form.host.trim() });
+  };
 
   return (
     <View style={{ gap: spacing.lg }}>
@@ -42,7 +79,9 @@ export default function ConnectStep({
         <TextField
           label="Host"
           value={form.host}
-          onChangeText={(host) => onFormChange({ ...form, host })}
+          onChangeText={handleHostChange}
+          onBlur={handleHostBlur}
+          errorText={hostError}
           placeholder="e.g. 203.0.113.10:8443"
           autoCapitalize="none"
         />
@@ -55,10 +94,7 @@ export default function ConnectStep({
         />
         <PrimaryButton
           label="Connect"
-          onPress={() => {
-            console.log('[PiG Button] "Connect" clicked. Host:', form.host, 'Token:', form.token);
-            onSubmit();
-          }}
+          onPress={handleConnect}
           disabled={!form.host.trim() || !form.token.trim()}
         />
       </View>

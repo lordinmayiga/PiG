@@ -173,28 +173,33 @@ function TabChip({ tab, isActive, onSelect, onClose, onMeasure }: TabChipProps) 
 
   return (
     <Animated.View style={[styles.tabWrapper, chipStyle]} onLayout={handleLayout}>
-      <Pressable
-        onPress={() => onSelect(tab.id)}
-        accessibilityRole="button"
-        accessibilityLabel={`Switch to tab: ${tab.title}`}
+      <View
         style={[
           styles.tab,
           {
             minHeight: minTouchTarget,
             borderRadius: radius.chip,
-            paddingHorizontal: spacing.sm,
+            paddingLeft: spacing.sm,
+            paddingRight: spacing.xs,
             gap: spacing.xs,
             borderColor: isActive ? 'transparent' : colors.border,
           },
         ]}
       >
-        <Text
-          maxFontSizeMultiplier={maxFontScale}
-          numberOfLines={1}
-          style={[typeScale.label, { color: isActive ? colors.onAccent : colors.ink, maxWidth: 96 }]}
+        <Pressable
+          onPress={() => onSelect(tab.id)}
+          accessibilityRole="button"
+          accessibilityLabel={`Switch to tab: ${tab.title}`}
+          style={styles.tabSelectArea}
         >
-          {tab.title || 'New tab'}
-        </Text>
+          <Text
+            maxFontSizeMultiplier={maxFontScale}
+            numberOfLines={1}
+            style={[typeScale.label, { color: isActive ? colors.onAccent : colors.ink, maxWidth: 96 }]}
+          >
+            {tab.title || 'New tab'}
+          </Text>
+        </Pressable>
         <Pressable
           onPress={handleClose}
           accessibilityRole="button"
@@ -204,7 +209,7 @@ function TabChip({ tab, isActive, onSelect, onClose, onMeasure }: TabChipProps) 
         >
           <Icon icon={X} size={iconSizes.sm} color={isActive ? colors.onAccent : colors.inkSecondary} />
         </Pressable>
-      </Pressable>
+      </View>
     </Animated.View>
   );
 }
@@ -225,6 +230,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  tabSelectArea: {
+    justifyContent: 'center',
+    paddingVertical: 6,
   },
   closeButton: {
     alignItems: 'center',

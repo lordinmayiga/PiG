@@ -149,8 +149,10 @@ async function getActivePanePath(sessionName: string): Promise<string> {
   return '';
 }
 
-function inferAgentKind(windowName: string): AgentKind {
-  return /agy|antigravity/i.test(windowName) ? 'antigravity' : 'claude-code';
+function inferAgentKind(windowName: string, sessionName = ''): AgentKind {
+  return /agy|antigravity/i.test(windowName) || /agy|antigravity/i.test(sessionName)
+    ? 'antigravity'
+    : 'claude-code';
 }
 
 function deriveStatus(raw: RawSession, nowMs: number): SessionStatus {
@@ -179,7 +181,7 @@ export async function listTmuxSessions(): Promise<Session[]> {
       const session: Session = {
         id: raw.id || raw.name,
         name: raw.name,
-        agent: inferAgentKind(windowName),
+        agent: inferAgentKind(windowName, raw.name),
         folder,
         status: deriveStatus(raw, nowMs),
         createdAt: toIso(raw.created),

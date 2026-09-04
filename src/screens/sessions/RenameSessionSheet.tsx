@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -59,7 +59,11 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
       </ReanimatedAnimated.View>
       <ReanimatedAnimated.View style={[styles.sheet, sheetStyle]}>
         <KeyboardAvoidingView
-          behavior="padding"
+          // See TranscriptScreen's KeyboardAvoidingView comment: Android
+          // already resizes via windowSoftInputMode="adjustResize", so
+          // "padding" is iOS-only to avoid double-compensating and clipping
+          // the sheet's buttons off-screen.
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={{
             backgroundColor: colors.elevated,
             borderTopLeftRadius: radius.sheet,

@@ -9,6 +9,7 @@ Voice rules: name things by what people recognize, not how the system is built. 
 
 ## Locked copy patterns — reuse these verbatim where they apply, match their tone elsewhere
 
+- **No emojis**: Never use emojis in any UI copy, button label, dialog title, toast, chip, or empty state. Always use clean text with adjacent Lucide icons where visual grounding is needed.
 - **Buttons**: "New session", "Send", "Kill session", "Retry" — plain verbs. Never "Submit", "Delete" (use "Kill session" instead — matches how the product already talks about it), or a generic "OK".
 - **Kill-session confirm dialog**:
   - Title: "Kill this session?"

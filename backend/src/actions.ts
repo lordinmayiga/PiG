@@ -213,10 +213,12 @@ export async function executeNonDestructiveAction(
     case 'create_session': {
       const name = resolveSessionName(sessionId, details);
       const cwd = typeof details.cwd === 'string' ? details.cwd : undefined;
+      const agent = typeof details.agent === 'string' ? details.agent : undefined;
       if (!name) {
         throw new Error('create_session: no session name provided');
       }
-      const args = ['new-session', '-d', '-s', name];
+      const windowName = agent === 'antigravity' || /agy|antigravity/i.test(name) ? 'agy' : 'main';
+      const args = ['new-session', '-d', '-s', name, '-n', windowName];
       if (cwd) {
         args.push('-c', cwd);
       }

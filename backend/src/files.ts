@@ -14,7 +14,7 @@ const DEFAULT_ROOT_DIR = existsSync('/root/projects') ? '/root/projects' : (exis
 
 const MAX_READ_SIZE_BYTES = 5 * 1024 * 1024; // 5MB limit for safety
 
-const MIME_TYPES: Record<string, string> = {
+export const MIME_TYPES: Record<string, string> = {
   '.ts': 'text/typescript',
   '.tsx': 'text/typescript-jsx',
   '.js': 'application/javascript',

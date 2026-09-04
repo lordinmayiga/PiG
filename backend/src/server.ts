@@ -25,6 +25,9 @@
  * client has an active turn on.
  */
 import { WebSocketServer, type WebSocket } from 'ws';
+import { createServer, type Server as HttpServer } from 'node:http';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
   Envelope,
@@ -35,12 +38,14 @@ import type {
   ActionConfirmPayload,
   ResyncSnapshotPayload,
   SessionListUpdatePayload,
-  ActionResultPayload,
   TranscriptChunkPayload,
   TranscriptMessage,
   BridgeError,
   FsListPayload,
   FsReadPayload,
+  FsRawUrlPayload,
+  FsRawUrlResultPayload,
+  FileAttachment,
   SetOpenRouterKeyPayload,
   GetOpenRouterKeyPayload,
 } from '../../src/types/index.js';
@@ -50,7 +55,8 @@ import { routeInput } from './routeInput.js';
 import { confirmAction } from './actions.js';
 import { spawnAgentInTmuxWindow } from './agentProcess.js';
 import { getOrCreateSession, appendTurn, getTranscript, setActiveHandle } from './sessionRegistry.js';
-import { listDirectory, readFileContent } from './files.js';
+import { listDirectory, readFileContent, MIME_TYPES } from './files.js';
+import { handleHttpFileRequest, mintRawFileTicket } from './httpFiles.js';
 import { saveOpenRouterKey, getOpenRouterKeySettings } from './openrouterConfig.js';
 
 const PORT = Number(process.env.PIG_BRIDGE_PORT ?? 8787);
@@ -87,7 +93,7 @@ async function handleHello(ws: WebSocket, envelope: Envelope<HelloPayload>): Pro
   const ok = isValidBridgeToken(token) || verifyAndConsumePairingToken(token);
   if (!ok) {
     sendError(ws, 'bad_token', 'Invalid or expired token.', envelope.id);
-    ws.close();
+    ws.close(4001, 'Invalid or expired token.');
     return;
   }
   authedSockets.add(ws);
@@ -171,6 +177,46 @@ async function spawnAndStreamTurn(sessionId: string, prompt: string): Promise<vo
     prompt,
     onChunk: (chunk) => {
       console.log(`[pig-bridge] <<< Agent chunk for session "${sessionId}" [done: ${chunk.done}]: "${chunk.message.content.slice(-40)}"`);
+      if (chunk.done) {
+        try {
+          const candidateDirs = [
+            path.join(ctx.cwd, '.pig-output'),
+            path.join(ctx.cwd, '..', '.pig-output'),
+            '/root/projects/PiG/.pig-output',
+          ];
+          const targetDir = candidateDirs.find((d) => existsSync(d));
+          if (targetDir) {
+            const files = readdirSync(targetDir);
+            const attachments: FileAttachment[] = [];
+            for (const file of files) {
+              const fullPath = path.join(targetDir, file);
+              const stats = statSync(fullPath);
+              if (stats.isFile()) {
+                const ext = path.extname(file).toLowerCase();
+                const mime = MIME_TYPES[ext] ?? 'application/octet-stream';
+                const kind: 'image' | 'text' | 'other' = mime.startsWith('image/')
+                  ? 'image'
+                  : (mime.startsWith('text/') || mime === 'application/json' || mime === 'application/javascript')
+                  ? 'text'
+                  : 'other';
+                attachments.push({
+                  id: randomUUID(),
+                  name: file,
+                  path: fullPath,
+                  mimeType: mime,
+                  sizeBytes: stats.size,
+                  kind,
+                });
+              }
+            }
+            if (attachments.length > 0) {
+              chunk.message.attachments = attachments;
+            }
+          }
+        } catch (err) {
+          console.error(`[pig-bridge] Error scanning .pig-output for session "${sessionId}":`, err);
+        }
+      }
       appendTurn(sessionId, chunk.message);
       broadcastTranscriptChunk(chunk);
       if (chunk.done) {
@@ -235,6 +281,20 @@ async function handleGetOpenRouterKey(ws: WebSocket, envelope: Envelope<GetOpenR
   send(ws, 'get_openrouter_key_ack', result, envelope.sessionId, envelope.id);
 }
 
+async function handleFsRawUrlRequest(ws: WebSocket, envelope: Envelope<FsRawUrlPayload>): Promise<void> {
+  const { path: filePath } = envelope.payload;
+  try {
+    const token = mintRawFileTicket(filePath);
+    const host = process.env.PIG_BRIDGE_HOST ?? 'localhost';
+    const url = `http://${host}:${PORT}/files/raw?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(token)}`;
+    const payload: FsRawUrlResultPayload = { url, path: filePath };
+    send(ws, 'fs_raw_url_result', payload, envelope.sessionId, envelope.id);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    send(ws, 'fs_raw_url_result', { url: '', path: filePath, error: msg }, envelope.sessionId, envelope.id);
+  }
+}
+
 async function routeEnvelope(ws: WebSocket, envelope: Envelope): Promise<void> {
   if (envelope.type !== 'hello' && !authedSockets.has(ws)) {
     sendError(ws, 'bad_token', 'Send hello first.', envelope.id);
@@ -255,6 +315,8 @@ async function routeEnvelope(ws: WebSocket, envelope: Envelope): Promise<void> {
       return handleFsList(ws, envelope as Envelope<FsListPayload>);
     case 'fs_read':
       return handleFsRead(ws, envelope as Envelope<FsReadPayload>);
+    case 'fs_raw_url_request':
+      return handleFsRawUrlRequest(ws, envelope as Envelope<FsRawUrlPayload>);
     case 'set_openrouter_key':
       return handleSetOpenRouterKey(ws, envelope as Envelope<SetOpenRouterKeyPayload>);
     case 'get_openrouter_key':
@@ -265,7 +327,16 @@ async function routeEnvelope(ws: WebSocket, envelope: Envelope): Promise<void> {
 }
 
 export function startServer(port = PORT): WebSocketServer {
-  const wss = new WebSocketServer({ host: '0.0.0.0', port });
+  const httpServer = createServer((req, res) => {
+    const handled = handleHttpFileRequest(req, res);
+    if (!handled) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+    }
+  });
+
+  const wss = new WebSocketServer({ server: httpServer });
+  (wss as unknown as { httpServer: HttpServer }).httpServer = httpServer;
 
   wss.on('connection', (ws) => {
     ws.on('message', (raw) => {
@@ -308,8 +379,15 @@ export function startServer(port = PORT): WebSocketServer {
   }, SESSION_POLL_MS);
   pollTimer.unref();
 
-  // eslint-disable-next-line no-console
-  console.log(`[pig-bridge] listening on 0.0.0.0:${port}`);
+  httpServer.listen(port, '0.0.0.0', () => {
+    // eslint-disable-next-line no-console
+    console.log(`[pig-bridge] listening on 0.0.0.0:${port} (HTTP & WebSocket)`);
+  });
+
+  wss.on('close', () => {
+    httpServer.close();
+  });
+
   return wss;
 }
 

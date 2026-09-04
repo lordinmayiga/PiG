@@ -72,7 +72,6 @@ export default function FileExplorerScreen() {
   useEffect(() => {
     let cancelled = false;
     if (!client) {
-      setFsEntries([]);
       return;
     }
     client
@@ -113,11 +112,20 @@ export default function FileExplorerScreen() {
   }, [fsEntries]);
 
   const breadcrumbs = useMemo(() => {
-    const segments = currentPath ? currentPath.split('/') : [];
+    // The backend returns absolute paths (e.g. "/root/projects/PiG"), so a
+    // naive `.split('/')` produces an empty leading segment before the
+    // first "/" — that became a second crumb with path: '', colliding with
+    // the "Working folder" root crumb's key and triggering React's
+    // duplicate-key warning. `.filter(Boolean)` drops that empty segment;
+    // `isAbsolute` re-adds the leading "/" while rebuilding each crumb's
+    // path so navigating a crumb still resolves to a real absolute path
+    // instead of one resolveSafePath would misinterpret as relative.
+    const isAbsolute = currentPath.startsWith('/');
+    const segments = currentPath ? currentPath.split('/').filter(Boolean) : [];
     const crumbs: { label: string; path: string }[] = [{ label: 'Working folder', path: '' }];
     let built = '';
     for (const segment of segments) {
-      built = built ? `${built}/${segment}` : segment;
+      built = isAbsolute ? `${built}/${segment}` : built ? `${built}/${segment}` : segment;
       crumbs.push({ label: segment, path: built });
     }
     return crumbs;

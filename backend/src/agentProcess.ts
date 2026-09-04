@@ -118,7 +118,7 @@ function resolveAgentCommand(agent: AgentKind, prompt: string): { bin: string; a
           : 'claude';
       return {
         bin,
-        args: ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', prompt],
+        args: ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--dangerously-skip-permissions', '--verbose', prompt],
       };
     }
     case 'antigravity': {
@@ -129,7 +129,7 @@ function resolveAgentCommand(agent: AgentKind, prompt: string): { bin: string; a
           : existsSync('/usr/bin/agy')
             ? '/usr/bin/agy'
             : 'agy';
-      return { bin, args: ['--output-format', 'stream-json', `--print=${prompt}`] };
+      return { bin, args: ['--output-format', 'stream-json', '--dangerously-skip-permissions', `--print=${prompt}`] };
     }
   }
 }

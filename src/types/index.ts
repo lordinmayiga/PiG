@@ -97,6 +97,7 @@ export type AppToBackendEventType =
   | 'ping'
   | 'fs_list'
   | 'fs_read'
+  | 'fs_raw_url_request'
   | 'set_openrouter_key'
   | 'get_openrouter_key';
 
@@ -111,6 +112,7 @@ export type BackendToAppEventType =
   | 'pong'
   | 'fs_list_result'
   | 'fs_read_result'
+  | 'fs_raw_url_result'
   | 'set_openrouter_key_ack'
   | 'get_openrouter_key_ack';
 
@@ -259,3 +261,16 @@ export interface GetOpenRouterKeyAckPayload {
   hasKey: boolean;
   keySuffix?: string;
 }
+
+/** app -> backend: request a temporary URL to view raw file content over HTTP. */
+export interface FsRawUrlPayload {
+  path: string;
+}
+
+/** backend -> app: temporary raw URL response. */
+export interface FsRawUrlResultPayload {
+  url: string;
+  path: string;
+  error?: string;
+}
+

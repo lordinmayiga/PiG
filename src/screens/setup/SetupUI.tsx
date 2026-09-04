@@ -105,6 +105,7 @@ interface TextFieldProps extends Pick<TextInputProps, 'autoCapitalize' | 'keyboa
   onChangeText: (text: string) => void;
   placeholder: string;
   errorText?: string;
+  onBlur?: () => void;
 }
 
 export function TextField({
@@ -113,6 +114,7 @@ export function TextField({
   onChangeText,
   placeholder,
   errorText,
+  onBlur,
   autoCapitalize = 'none',
   keyboardType,
   secureTextEntry,
@@ -135,7 +137,10 @@ export function TextField({
         keyboardType={keyboardType}
         secureTextEntry={secureTextEntry}
         onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+        onBlur={() => {
+          setFocused(false);
+          onBlur?.();
+        }}
         maxFontSizeMultiplier={maxFontScale}
         style={[
           typeScale.body,

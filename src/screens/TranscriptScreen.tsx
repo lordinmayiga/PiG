@@ -4,6 +4,7 @@ import {
   KeyboardAvoidingView,
   NativeScrollEvent,
   NativeSyntheticEvent,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -281,7 +282,7 @@ export default function TranscriptScreen() {
   }, []);
 
   const handleSend = useCallback(
-    (text: string, attachments: ComposerAttachment[]) => {
+    (text: string, attachments: ComposerAttachment[], alreadySent = false) => {
       const userMessage: TranscriptMessage = {
         id: `local-msg-${nextMessageId++}`,
         role: 'user',
@@ -298,18 +299,20 @@ export default function TranscriptScreen() {
         status: isConnected ? 'streaming' : 'error',
         content: isConnected ? '' : 'Disconnected from VPS. Reconnect to send messages.',
       };
-      console.log(`[PiG Chat] User clicked Send for session "${sessionId}": "${text}" (attachments: ${attachments.length}, isConnected: ${isConnected})`);
+      console.log(`[PiG Chat] User clicked Send for session "${sessionId}": "${text}" (attachments: ${attachments.length}, isConnected: ${isConnected}, alreadySent: ${alreadySent})`);
       isNearBottomRef.current = true;
       setMessages((prev) => [...prev, userMessage, agentReply]);
       void appendAndPersist(sessionId, [userMessage, agentReply]);
       if (isConnected && client) {
-        console.log(`[PiG Chat] Routing message to bridge WebSocket client: "${text}"`);
         pendingPlaceholderIdRef.current[sessionId] = replyId;
-        client.sendRouteInput({
-          sessionId,
-          text,
-          attachmentIds: attachments.map((a) => a.id),
-        });
+        if (!alreadySent) {
+          console.log(`[PiG Chat] Routing message to bridge WebSocket client: "${text}"`);
+          client.sendRouteInput({
+            sessionId,
+            text,
+            attachmentIds: attachments.map((a) => a.id),
+          });
+        }
       }
       setTimeout(() => scrollToBottom(true), 50);
     },
@@ -404,7 +407,13 @@ export default function TranscriptScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.canvas }]}
-      behavior="padding"
+      // Android's AndroidManifest.xml sets windowSoftInputMode="adjustResize",
+      // so the OS already shrinks the window when the keyboard opens —
+      // stacking KeyboardAvoidingView's own "padding" behavior on top of that
+      // double-compensates and pushes the composer (and its Send button)
+      // below the visible viewport. iOS has no such manifest-level resize,
+      // so it still needs "padding" here.
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View
         style={[

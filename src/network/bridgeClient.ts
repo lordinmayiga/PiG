@@ -10,6 +10,7 @@ import type {
   FsEntry,
   FsListResultPayload,
   FsReadResultPayload,
+  FsRawUrlResultPayload,
   GetOpenRouterKeyAckPayload,
   HelloAckPayload,
   HelloPayload,
@@ -83,12 +84,10 @@ export class WebSocketTransport implements BridgeTransport {
     // again without close()) must not leak listeners onto the new one.
     this.teardownSocket();
 
-    console.log('[PiG Bridge] Opening WebSocket to:', this.url);
     let socket: WebSocket;
     try {
       socket = new WebSocket(this.url);
     } catch (err) {
-      console.error('[PiG Bridge] Failed to construct WebSocket to:', this.url, err);
       // Malformed URL, etc — surface as a close so BridgeClient's reconnect
       // logic handles it uniformly rather than throwing out of open().
       queueMicrotask(() => this.closeEmitter.emit(err instanceof Error ? err.message : 'failed to construct WebSocket'));
@@ -97,7 +96,6 @@ export class WebSocketTransport implements BridgeTransport {
     this.ws = socket;
 
     socket.onopen = () => {
-      console.log('[PiG Bridge] WebSocket opened successfully to:', this.url);
       this.openEmitter.emit();
     };
     socket.onmessage = (event: { data: unknown }) => {
@@ -110,12 +108,11 @@ export class WebSocketTransport implements BridgeTransport {
       }
       this.messageEmitter.emit(parsed);
     };
-    socket.onerror = (err) => {
-      console.error('[PiG Bridge] WebSocket error on:', this.url, err);
+    socket.onerror = () => {
+      // Transport error — handled on close
     };
     socket.onclose = (event: { reason?: string; code?: number }) => {
-      console.warn('[PiG Bridge] WebSocket closed from:', this.url, 'code:', event.code, 'reason:', event.reason);
-      this.closeEmitter.emit(event.reason || undefined);
+      this.closeEmitter.emit(event.code === 4001 ? 'bad_token' : (event.reason || undefined));
     };
   }
 
@@ -213,6 +210,7 @@ export class BridgeClient {
   private readonly errorEmitter = new Emitter<BridgeError>();
   private readonly fsListResultEmitter = new Emitter<FsListResultPayload>();
   private readonly fsReadResultEmitter = new Emitter<FsReadResultPayload>();
+  private readonly fsRawUrlResultEmitter = new Emitter<FsRawUrlResultPayload>();
   private readonly setOpenRouterKeyAckEmitter = new Emitter<SetOpenRouterKeyAckPayload>();
   private readonly getOpenRouterKeyAckEmitter = new Emitter<GetOpenRouterKeyAckPayload>();
 
@@ -247,7 +245,6 @@ export class BridgeClient {
   /** Sends a route_input envelope (composer submission). */
   sendRouteInput(payload: RouteInputPayload): string {
     const id = makeEnvelopeId();
-    console.log(`[PiG Bridge] >>> sendRouteInput -> sending prompt to session "${payload.sessionId}": "${payload.text}"`);
     this.transport.send({
       v: 1,
       type: 'route_input',
@@ -338,6 +335,36 @@ export class BridgeClient {
       this.transport.send({
         v: 1,
         type: 'fs_read',
+        id,
+        ts: Date.now(),
+        payload: { path },
+      });
+    });
+  }
+
+  /** Requests a temporary HTTP URL to view raw file content on the VPS. */
+  async getRawFileUrl(path: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const id = makeEnvelopeId();
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.fsRawUrlResultEmitter.on((result) => {
+        if (!result.path || result.path === path) {
+          clearTimeout(timer);
+          unsub();
+          if (result.error) {
+            reject(new Error(result.error));
+          } else {
+            resolve(result.url);
+          }
+        }
+      });
+      timer = setTimeout(() => {
+        unsub();
+        reject(new Error('getRawFileUrl request timed out'));
+      }, 10000);
+      this.transport.send({
+        v: 1,
+        type: 'fs_raw_url_request',
         id,
         ts: Date.now(),
         payload: { path },
@@ -467,8 +494,15 @@ export class BridgeClient {
     });
   }
 
-  private handleTransportClose(_reason?: string): void {
+  private handleTransportClose(reason?: string): void {
     this.unwireTransportListeners();
+    if (reason === 'bad_token') {
+      this.shouldReconnect = false;
+      this.clearReconnectTimer();
+      this.setStatus('disconnected');
+      this.errorEmitter.emit({ code: 'bad_token', message: 'Invalid or expired token.' });
+      return;
+    }
     if (!this.shouldReconnect) {
       this.setStatus('disconnected');
       return;
@@ -500,7 +534,13 @@ export class BridgeClient {
 
   private setStatus(status: ConnectionStatus): void {
     if (this.status === status) return;
+    const previous = this.status;
     this.status = status;
+    if (status === 'connected') {
+      console.log('[PiG Bridge] Connected to VPS');
+    } else if (previous === 'connected' && (status === 'disconnected' || status === 'reconnecting')) {
+      console.log('[PiG Bridge] Disconnected from VPS');
+    }
     this.connectionStatusEmitter.emit(status);
   }
 
@@ -508,7 +548,6 @@ export class BridgeClient {
     switch (envelope.type) {
       case 'hello_ack': {
         const payload = envelope.payload as HelloAckPayload;
-        console.log('[PiG Bridge] <<< hello_ack received! Handshake ok:', payload.ok, 'serverVersion:', payload.serverVersion);
         if (payload.ok) {
           this.setStatus('connected');
           // Resync via fresh fetch, not stream replay (SPEC §8).
@@ -522,7 +561,6 @@ export class BridgeClient {
 
       case 'resync_snapshot': {
         const payload = envelope.payload as ResyncSnapshotPayload;
-        console.log(`[PiG Bridge] <<< resync_snapshot received! Found ${payload.sessions.length} sessions on VPS:`, payload.sessions.map((s) => s.name).join(', '));
         this.resyncSnapshotEmitter.emit(payload);
         this.sessionListUpdateEmitter.emit({ sessions: payload.sessions });
         return;
@@ -530,30 +568,18 @@ export class BridgeClient {
 
       case 'session_list_update': {
         const payload = envelope.payload as SessionListUpdatePayload;
-        // This event is polled every SESSION_POLL_MS while connected — only log when the
-        // list actually changed, not on every unchanged poll tick.
-        const signature = payload.sessions
-          .map((s) => `${s.id}:${s.status}:${s.lastActivityAt}`)
-          .sort()
-          .join(',');
-        if (signature !== this.lastLoggedSessionListSignature) {
-          this.lastLoggedSessionListSignature = signature;
-          console.log(`[PiG Bridge] <<< session_list_update received: ${payload.sessions.length} sessions.`);
-        }
         this.sessionListUpdateEmitter.emit(payload);
         return;
       }
 
       case 'transcript_chunk': {
         const payload = envelope.payload as TranscriptChunkPayload;
-        console.log(`[PiG Bridge] <<< transcript_chunk received for session "${payload.sessionId}" [done: ${payload.done}]: "${payload.message?.content?.slice(-50)}"`);
         this.transcriptChunkEmitter.emit(payload);
         return;
       }
 
       case 'action_result': {
         const payload = envelope.payload as ActionResultPayload;
-        console.log(`[PiG Bridge] <<< action_result received: kind=${payload.kind}`);
         this.actionResultEmitter.emit(payload);
         return;
       }
@@ -570,6 +596,12 @@ export class BridgeClient {
         return;
       }
 
+      case 'fs_raw_url_result': {
+        const payload = envelope.payload as FsRawUrlResultPayload;
+        this.fsRawUrlResultEmitter.emit(payload);
+        return;
+      }
+
       case 'set_openrouter_key_ack': {
         const payload = envelope.payload as SetOpenRouterKeyAckPayload;
         this.setOpenRouterKeyAckEmitter.emit(payload);
@@ -582,9 +614,16 @@ export class BridgeClient {
         return;
       }
 
-      case 'error':
-        this.errorEmitter.emit(envelope.payload as BridgeError);
+      case 'error': {
+        const payload = envelope.payload as BridgeError;
+        if (payload.code === 'bad_token') {
+          this.shouldReconnect = false;
+          this.clearReconnectTimer();
+          this.setStatus('disconnected');
+        }
+        this.errorEmitter.emit(payload);
         return;
+      }
 
       case 'pong':
         return;

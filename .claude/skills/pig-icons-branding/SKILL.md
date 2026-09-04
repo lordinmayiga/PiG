@@ -5,7 +5,8 @@ description: Use when adding icons anywhere in PiG, or touching the app icon/spl
 
 # PiG icons & branding
 
-- **Icon library: `lucide-react-native`, everywhere, no exceptions.** No emojis anywhere in the UI.
+- **Icon library: `lucide-react-native`, everywhere, no exceptions.**
+- **Strict No-Emoji Rule**: **Never use emojis anywhere in the app** (no emojis in buttons, menus, dialogs, status indicators, badges, empty states, toasts, or overlays). Emojis look amateur, render inconsistently across OS versions, and break PiG's restrained terminal-workstation aesthetic. We must always only ever use Lucide SVG icons via the `Icon` component.
 - Stroke weight: 2px, consistently.
 - Size scale: 16 / 20 / 24 — pick from these three, don't introduce arbitrary icon sizes.
 - Icon color always comes from the ink/accent tokens in `pig-color-system`, by context — never a hardcoded color on an icon.

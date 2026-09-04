@@ -26,25 +26,33 @@ const SessionsContext = createContext<SessionsContextValue | null>(null);
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const { client } = useBridge();
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [isLoadingSessions, setIsLoadingSessions] = useState<boolean>(true);
+  const [rawLoading, setRawLoading] = useState<boolean>(true);
+  const isLoadingSessions = !client ? false : rawLoading;
 
   useEffect(() => {
-    if (!client) {
-      setIsLoadingSessions(false);
-      return;
-    }
-    setIsLoadingSessions(true);
+    if (!client) return;
     const unsubscribeResync = client.onResyncSnapshot((snapshot) => {
       setSessions(snapshot.sessions);
-      setIsLoadingSessions(false);
+      setRawLoading(false);
     });
     const unsubscribeUpdate = client.onSessionListUpdate((update) => {
       setSessions(update.sessions);
-      setIsLoadingSessions(false);
+      setRawLoading(false);
     });
+    const unsubscribeStatus = client.onConnectionStatus((status) => {
+      if (status === 'connected') {
+        client.requestResync();
+      }
+    });
+
+    if (client.getStatus() === 'connected') {
+      client.requestResync();
+    }
+
     return () => {
       unsubscribeResync();
       unsubscribeUpdate();
+      unsubscribeStatus();
     };
   }, [client]);
 

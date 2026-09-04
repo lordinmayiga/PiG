@@ -11,7 +11,7 @@
  */
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
-import { loadBridgeCredentials, subscribeToCredentialsChange } from '../secureStorage';
+import { loadBridgeCredentials, clearBridgeCredentials, subscribeToCredentialsChange } from '../secureStorage';
 import { connectBridge, disconnectBridge, type ConnectionStatus } from '../network/bridgeConnection';
 import type { BridgeClient } from '../network/bridgeClient';
 
@@ -29,6 +29,7 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     let unsubscribeStatus: (() => void) | null = null;
+    let unsubscribeError: (() => void) | null = null;
 
     const syncFromCredentials = async () => {
       const credentials = await loadBridgeCredentials();
@@ -36,6 +37,8 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
 
       unsubscribeStatus?.();
       unsubscribeStatus = null;
+      unsubscribeError?.();
+      unsubscribeError = null;
 
       if (!credentials) {
         disconnectBridge();
@@ -44,10 +47,17 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      disconnectBridge();
       const bridgeClient = connectBridge(credentials.host, credentials.token);
       setClient(bridgeClient);
       setStatus(bridgeClient.getStatus());
       unsubscribeStatus = bridgeClient.onConnectionStatus(setStatus);
+      unsubscribeError = bridgeClient.onError((err) => {
+        if (err.code === 'bad_token') {
+          console.warn('[BridgeContext] bad_token received from VPS, clearing credentials');
+          void clearBridgeCredentials();
+        }
+      });
     };
 
     void syncFromCredentials();
@@ -59,6 +69,7 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
       unsubscribeStatus?.();
+      unsubscribeError?.();
       unsubscribeCredentials();
     };
   }, []);

@@ -24,12 +24,39 @@ import { Icon, iconSizes } from '../theme/icons';
  * available in this sandbox, so it won't visibly load pages while testing
  * here — the tab/control state management is verified independent of that.
  */
-export default function BrowserScreen() {
+interface BrowserScreenProps {
+  route?: {
+    params?: {
+      initialUrl?: string;
+    };
+  };
+}
+
+export default function BrowserScreen({ route }: BrowserScreenProps = {}) {
   const { colors, spacing, radius, typeScale, screenMargin, maxFontScale, minTouchTarget } = useTheme();
 
   const [tabs, setTabs] = useState<BrowserTab[]>(() => [createBlankTab()]);
   const [activeTabId, setActiveTabId] = useState(tabs[0].id);
   const webviewRefs = useRef<Record<string, WebView | null>>({});
+  const lastOpenedUrl = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    const targetUrl = route?.params?.initialUrl;
+    if (targetUrl && targetUrl !== lastOpenedUrl.current) {
+      lastOpenedUrl.current = targetUrl;
+      setTabs((prev) => {
+        const active = prev.find((t) => t.id === activeTabId);
+        if (active && (active.url === 'about:blank' || !active.addressDraft)) {
+          return prev.map((t) =>
+            t.id === activeTabId ? { ...t, url: targetUrl, addressDraft: targetUrl, title: targetUrl } : t,
+          );
+        }
+        const fresh = { ...createBlankTab(), url: targetUrl, addressDraft: targetUrl, title: targetUrl };
+        setActiveTabId(fresh.id);
+        return [...prev, fresh];
+      });
+    }
+  }, [route?.params?.initialUrl, activeTabId]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, ScrollView, StyleSheet } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -12,6 +12,7 @@ import ConnectingStep from './setup/ConnectingStep';
 import ResultStep from './setup/ResultStep';
 import OpenRouterStep from './setup/OpenRouterStep';
 import { emptyConnectForm, type ConnectFormState, type ConnectOutcome, type SetupStep } from './setup/types';
+import { validateHost } from './setup/validateHost';
 import { BridgeClient, WebSocketTransport, bridgeUrlFromHost } from '../network/bridgeClient';
 
 interface SetupScreenProps {
@@ -60,14 +61,24 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
       setForm(overrideForm);
     }
 
-    const host = (activeForm.host ?? '').trim();
+    const rawHost = (activeForm.host ?? '').trim();
     const token = (activeForm.token ?? '').trim();
 
-    if (!host || !token) {
+    if (!rawHost || !token) {
       setOutcome('unreachable');
       setStep('error');
       return;
     }
+
+    const hostValidation = validateHost(rawHost);
+    if (!hostValidation.valid && !forcedOutcome) {
+      console.warn('[PiG Setup] Invalid host rejected in handleSubmit:', rawHost, hostValidation.error);
+      setOutcome('unreachable');
+      setStep('error');
+      return;
+    }
+
+    const host = hostValidation.cleanHost ?? rawHost;
 
     console.log('[PiG Setup] handleSubmit with host:', host, 'forcedOutcome:', forcedOutcome);
     setStep('connecting');
@@ -172,7 +183,10 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: colors.canvas }}
-      behavior="padding"
+      // See TranscriptScreen's KeyboardAvoidingView comment: Android already
+      // resizes via windowSoftInputMode="adjustResize", so "padding" is
+      // iOS-only here to avoid double-compensating and clipping content.
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView
         style={{ flex: 1 }}
