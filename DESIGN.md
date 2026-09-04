@@ -102,6 +102,18 @@ Distinct from in-app iconography (locked: Lucide throughout). Real concept (lite
 - Composer placeholder: "Message the agent…"
 - Misrouted input recovery: inline note under the sent bubble — "Sent as a command." with `Undo` — not a blocking dialog.
 
+## State-coverage audit (2026-09-04) — rules added, not yet built
+
+An audit of the `pig-*` skills against the standard "five states / theme / interaction states / network outcomes / content boundaries / reversibility" checklist found real gaps — new skills (`pig-screen-states`, `pig-interaction-states`, `pig-network-states`) and edits to existing ones now document the rules, but **none of the following exist in the app yet.** Flagging here so this doesn't read as already-done just because a skill describes it:
+
+- **Partial states** (`pig-screen-states`): no screen has been checked against a mid-stream disconnect, a partially-failed Sessions resync, or a partially-failed File Explorer listing.
+- **Disabled/focus-visible/field-error visual treatment** (`pig-interaction-states`): no disabled-opacity token, no focus ring, no field-error border exists in `src/theme` or any component today — `disabled` props are wired through in a few components with no shared visual behind them.
+- **Network outcome tracking** (`pig-network-states`): no pending/succeeded/failed/unknown status is tracked per action anywhere in `src/components` or `src/screens` — a dropped/failed send currently has no defined UI outcome at all.
+- **Many/absurd content density** (`pig-empty-states`): Sessions list and File Explorer have no virtualization/pagination tuning verified past the small counts used in development.
+- **Long-content truncation** (`pig-typography`): no enforced truncation rule has been applied to session names/paths yet.
+- **High contrast and RTL**: both undecided (in/out of scope), not just unbuilt — see `pig-open-decisions` memory.
+- **Reversibility assignment for file delete/rename, browser tab close, OpenRouter key removal**: none of these actions exist in code yet; a treatment (confirm vs. undo) must be picked before any of them ship — table in `pig-microcopy`.
+
 ## Outstanding questions (design-focused only)
 
 1. Local storage schema for transcripts (on-device cache depth vs. re-fetch from VPS) — borderline design/engineering; revisit once we're past visual design.

@@ -5,6 +5,8 @@ description: Use when implementing any loading, waiting, or "in progress" UI in 
 
 # PiG loading-state rule
 
+Loading is one of five states every screen needs — see `pig-screen-states` for the full walk (ideal/empty/loading/partial/error) and `pig-network-states` for how a network action's pending state ties into this.
+
 Decision rule — apply this instead of picking ad hoc per screen:
 
 - **Skeleton**: content shape is already known AND load is likely >500ms. Examples: Sessions grid first load, transcript scrollback resync after a long absence.

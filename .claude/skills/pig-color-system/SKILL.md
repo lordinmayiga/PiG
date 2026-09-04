@@ -83,6 +83,14 @@ Known trade-off: if the pressed row's *own* container already uses `elevated` as
 
 Never use `neutral[100]`/`neutral[200]`/`neutral[300]` unconditionally as a `pressed`-state fill (or any other cross-mode value) — same rule as static recessed fills, same failure mode: a light-only step bleeding into dark and rendering as a bright patch (found 2026-09-04 in the slash-command sheet's command/model row press states).
 
+## Disabled state
+
+A disabled interactive element (see `pig-interaction-states` for the full rule) reduces its fill/text/icon to **0.4 opacity** of its enabled color — not a separate hardcoded gray. This is the one state that's exempt from the "every color needs its own dark-mode step" rule below, since opacity scales the existing token correctly in both modes on its own.
+
+## High contrast — not decided, not built
+
+No high-contrast variant exists for any token above, and whether PiG needs one hasn't been decided — this is an open gap, not a considered "no." Don't assume it's out of scope; flag it before either building a high-contrast mode or declaring it unnecessary. Same status as the app-icon concept in `pig-icons-branding`: parked, not resolved.
+
 ## Rules
 
 - Status is always **dot + text label**, never color alone.

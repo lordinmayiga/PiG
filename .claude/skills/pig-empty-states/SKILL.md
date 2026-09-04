@@ -66,6 +66,16 @@ Shown when no web tabs are currently open.
 
 ---
 
+## The other end of the range: one, many, absurd
+
+Empty (zero) is the state this skill covers in depth, but it's only one boundary — the same screens need checking at **one** item, **many** items, and an **absurd** number, per `pig-screen-states`:
+
+- **One**: a Sessions list or File Explorer folder with exactly one entry shouldn't look like a broken grid/list — verify spacing and any "N items" count copy handles the singular correctly.
+- **Many**: Sessions list and File Explorer folder contents are unbounded — neither currently has a virtualization/pagination plan. A `FlatList` (already the right component for both per RN convention) needs `windowSize`/`initialNumToRender` tuning verified past a few hundred rows, not just tested against the 3-5 rows used in mockups.
+- **Absurd**: a 200-character session name or a deeply nested file path — see `pig-typography`'s truncation rule.
+
+**Not yet implemented**: the many/absurd cases above haven't been tested against either screen as of 2026-09-04 — both currently render fine only at the small counts used during development.
+
 ## Design System Constraints
 
 - **Color**: Adhere strictly to `pig-color-system` — use semantic tokens (`colors.canvas`, `colors.card`, `colors.inkSecondary`, `colors.accent`).

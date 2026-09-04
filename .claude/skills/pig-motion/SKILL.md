@@ -27,7 +27,7 @@ PiG is a mobile terminal & agent workstation, not a consumer social app. Motion 
 
 | Token / Hook | Target Duration | Value / Transform | Usage |
 | :--- | :--- | :--- | :--- |
-| `usePressScale()` | `100ms` | `scale: 0.96`, `opacity: 0.85` | Every pressable card, button, tab, and chip. |
+| `usePressScale()` | `100ms` | `scale: 0.96`, `opacity: 0.85` | Every pressable card, button, tab, and chip — **skip entirely on a disabled element**, per `pig-interaction-states`. |
 | `useFadeSlideIn(delayMs)` | `220ms` | `opacity: 0 -> 1`, `translateY: 8 -> 0` | Message arrivals, staggered session cards. |
 | `STAGGER_OFFSET_MS` | `30ms` per item | Stagger delay | Cascading list entrances (cards, files). |
 | `useStatusDotPulse(active)` | `700ms` loop | `opacity: 1.0 <-> 0.35` | Reconnecting / active turn thinking status dot. |
