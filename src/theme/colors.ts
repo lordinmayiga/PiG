@@ -38,6 +38,8 @@ export interface ThemeColors {
   accent: string;
   /** Low-emphasis accent-tinted fill (selected rows, highlighted pills) — replaces the `accent + 'NN'` alpha-string hack. */
   accentTint: string;
+  /** Press-feedback fill for interactive rows/buttons — one step up from `card`, direction inverts by mode. Never use `neutral[100..300]` directly for this. */
+  pressedFill: string;
 
   /** Success / connected — fill & dot only, never text. */
   success: string;
@@ -99,6 +101,7 @@ export const lightColors: ThemeColors = {
 
   accent: base.velvetOrchid,
   accentTint: '#f2e3f3',
+  pressedFill: neutral[100],
 
   success: base.mutedTeal,
   warning: base.amberOchreDeep,
@@ -123,6 +126,7 @@ export const darkColors: ThemeColors = {
 
   accent: base.velvetOrchidDark,
   accentTint: '#3a2a3c',
+  pressedFill: '#372f2c',
 
   success: base.mutedTeal,
   warning: base.amberOchre,

@@ -40,7 +40,7 @@ import { FileAttachmentChip } from '../components/FileAttachmentChip';
 import { FileViewerSheet, type ViewableFile } from '../components/FileViewerSheet';
 import { Composer, type ComposerAttachment } from '../components/Composer';
 import { TypingIndicator } from '../components/TypingIndicator';
-import { ThinkingAccordion } from '../components/ThinkingAccordion';
+import { AgentActionsFeed } from '../components/AgentActionsFeed';
 import { SlashCommandOverlay } from '../components/SlashCommandOverlay';
 
 type Nav = NativeStackNavigationProp<SessionsStackParamList, 'Transcript'>;
@@ -85,9 +85,10 @@ const STARTER_PROMPTS: StarterPrompt[] = [
 interface TranscriptRowProps {
   item: TranscriptMessage;
   onOpenAttachment: (attachment: FileAttachment) => void;
+  onOpenFile: (path: string) => void;
 }
 
-function TranscriptRow({ item, onOpenAttachment }: TranscriptRowProps) {
+function TranscriptRow({ item, onOpenAttachment, onOpenFile }: TranscriptRowProps) {
   const { colors, spacing, typeScale } = useTheme();
   const animatedStyle = useFadeSlideIn();
 
@@ -130,21 +131,15 @@ function TranscriptRow({ item, onOpenAttachment }: TranscriptRowProps) {
           {relativeTime(item.timestamp)}
         </Text>
       </View>
-      {item.thinking ? (
-        <ThinkingAccordion
-          thinking={item.thinking}
-          isStreaming={status === 'streaming'}
-          hasAnswerContent={Boolean(item.content && item.content.trim().length > 0)}
-        />
-      ) : null}
+      {item.actions && item.actions.length > 0 ? <AgentActionsFeed actions={item.actions} /> : null}
       {status === 'error' ? (
         <Text style={[typeScale.body, { color: colors.destructive }]} maxFontSizeMultiplier={1.3}>
           {item.content}
         </Text>
-      ) : status === 'streaming' && item.content.trim() === '' && !item.thinking ? (
+      ) : status === 'streaming' && item.content.trim() === '' && !(item.actions && item.actions.length > 0) ? (
         <TypingIndicator />
       ) : item.content.trim() !== '' ? (
-        <MarkdownBody content={item.content} />
+        <MarkdownBody content={item.content} onOpenFile={onOpenFile} />
       ) : null}
       {item.attachments && item.attachments.length > 0 ? (
         <View style={[styles.attachmentsWrap, { gap: spacing.xxs, marginTop: spacing.sm }]}>
@@ -305,6 +300,30 @@ export default function TranscriptScreen() {
     setViewerFile(null);
     setViewerContent(undefined);
   }, []);
+
+  // Opens a file referenced by an inline markdown link (see
+  // fileLinkClassifier/MarkdownBody's onOpenFile) in the same FileViewerSheet
+  // attachment chips use — reusing openAttachment's viewer state rather than
+  // a second sheet. Unlike an attachment, an inline link carries no known
+  // mime/size ahead of time, so `kind` is inferred from the extension.
+  const openFileLink = useCallback(
+    async (rawPath: string) => {
+      const name = rawPath.split('/').pop() || rawPath;
+      const isImage = /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name);
+      setViewerFile({ name, path: rawPath, kind: isImage ? 'image' : 'text' });
+      if (!isImage && client) {
+        try {
+          const content = await client.fsRead(rawPath);
+          setViewerContent(content);
+        } catch {
+          setViewerContent(undefined);
+        }
+      } else {
+        setViewerContent(undefined);
+      }
+    },
+    [client],
+  );
 
   const handleSend = useCallback(
     (text: string, attachments: ComposerAttachment[], alreadySent = false) => {
@@ -487,7 +506,7 @@ export default function TranscriptScreen() {
         ref={flatListRef}
         data={messages}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => <TranscriptRow item={item} onOpenAttachment={openAttachment} />}
+        renderItem={({ item }) => <TranscriptRow item={item} onOpenAttachment={openAttachment} onOpenFile={openFileLink} />}
         ListEmptyComponent={renderEmptyTranscript}
         contentContainerStyle={{ flexGrow: 1, paddingVertical: spacing.md }}
         keyboardShouldPersistTaps="handled"

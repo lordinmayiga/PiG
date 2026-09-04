@@ -44,14 +44,40 @@ export interface TokenUsage {
   totalTokens: number;
 }
 
+export type AgentActionStatus = 'running' | 'done' | 'error';
+
+/** One tool call the agent made during a turn (reading/writing a file,
+ * running a command, searching, ...) — the live "what is it doing right
+ * now" signal, distinct from (and replacing, in the UI) internal reasoning
+ * text. Sourced from real tool_use/tool_result (claude-code) or step_type:
+ * 'tool' (antigravity) events — see backend/src/actionLabels.ts. */
+export interface AgentAction {
+  id: string;
+  /** Raw tool identifier from the CLI, e.g. 'Bash', 'Read', 'run_command', 'view_file'. */
+  tool: string;
+  /** Human-friendly summary, e.g. "Reading package.json". */
+  label: string;
+  /** Full command/path, for an expanded view. */
+  detail?: string;
+  status: AgentActionStatus;
+  /** Truncated result preview, once done/error. */
+  output?: string;
+  startedAt: string; // ISO 8601
+}
+
 export interface TranscriptMessage {
   id: string;
   role: MessageRole;
   timestamp: string; // ISO 8601
   /** Markdown body (agent turns may include fenced code blocks). */
   content: string;
-  /** Internal thinking stream or reasoning steps for this turn. */
+  /** Internal thinking stream or reasoning steps for this turn. Retained on
+   * the wire (harmless, and antigravity's parser still uses it to strip
+   * stray <thought> tags out of the visible content), but no longer
+   * rendered — see AgentAction/actions below for what the UI shows instead. */
   thinking?: string;
+  /** Tool calls made during this turn, in order, live-updated as they run. */
+  actions?: AgentAction[];
   /** Only meaningful for role: 'agent'. */
   status?: AgentTurnStatus;
   attachments?: FileAttachment[];

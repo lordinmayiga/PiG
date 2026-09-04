@@ -263,7 +263,7 @@ export function SlashCommandOverlay({
           ]}
         >
           {/* Sheet Handle */}
-          <View style={[styles.handle, { backgroundColor: colors.neutral[300] }]} />
+          <View style={[styles.handle, { backgroundColor: colors.border }]} />
 
           {/* Header */}
           <View style={[styles.header, { paddingHorizontal: spacing.sm }]}>
@@ -349,7 +349,7 @@ export function SlashCommandOverlay({
                     style={({ pressed }) => [
                       styles.itemCard,
                       {
-                        backgroundColor: pressed ? colors.neutral[100] : colors.card,
+                        backgroundColor: pressed ? colors.pressedFill : colors.card,
                         borderColor: colors.border,
                         borderRadius: radius.card,
                       },
@@ -405,7 +405,7 @@ export function SlashCommandOverlay({
                           backgroundColor: isSelected
                             ? colors.accentTint
                             : pressed
-                            ? colors.neutral[100]
+                            ? colors.pressedFill
                             : colors.card,
                           borderColor: isSelected ? colors.accent : colors.border,
                           borderRadius: radius.card,

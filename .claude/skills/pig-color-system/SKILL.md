@@ -70,6 +70,19 @@ Don't hand-roll a tint with string concatenation (`colors.accent + '15'`, `+ '25
 | Accent Tint — light | `#f2e3f3` | Selected/highlighted fill under accent-colored text or icons, light mode (14.7:1 ink-on-tint) |
 | Accent Tint — dark | `#3a2a3c` | Same role, dark mode (13.9:1 ink-on-tint) |
 
+## Pressed/active fill (row/button press feedback)
+
+Interactive press feedback (`Pressable`'s `pressed` state) is a different case from a static recessed fill above — it needs to read as one step up from whatever it's resting on (usually `card`), and that step **inverts direction by mode**: dark surfaces lighten on press, light surfaces can't (no lighter-than-white step exists — see "Surface elevation" above), so light reuses `neutral[100]` instead, which is safe here since light already owns that role.
+
+| Mode | Pressed fill | Reuses |
+|---|---|---|
+| Light | `neutral[100]` (`#f2ebe8`) | already documented "Card fill on Snow" |
+| Dark | `surface.elevated` (`#372f2c`) | already documented sheet/modal elevation |
+
+Known trade-off: if the pressed row's *own* container already uses `elevated` as its background (e.g. inside a bottom sheet), the row will flush to match its backdrop on press rather than visibly "light up" — still distinguishable by its border, but worth a visual check per instance rather than assuming it always reads as a highlight. Same spirit as the `ThinkingAccordion` card-on-card caveat above.
+
+Never use `neutral[100]`/`neutral[200]`/`neutral[300]` unconditionally as a `pressed`-state fill (or any other cross-mode value) — same rule as static recessed fills, same failure mode: a light-only step bleeding into dark and rendering as a bright patch (found 2026-09-04 in the slash-command sheet's command/model row press states).
+
 ## Rules
 
 - Status is always **dot + text label**, never color alone.

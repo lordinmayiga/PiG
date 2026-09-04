@@ -151,3 +151,98 @@ test('createTurnParser: malformed JSON and metadata event types yield null', () 
     null,
   );
 });
+
+// --- Agent actions (tool calls) — AGENT_ACTIONS_STREAM_PLAN.md §0's live-verified shapes ---
+
+test('createTurnParser: claude-code tool_use start -> assistant input -> tool_result marks an action running then done', () => {
+  const parse = createTurnParser('sess-1');
+
+  const start = parse(
+    JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: {} } },
+    }),
+  );
+  assert.equal(start?.message.actions?.length, 1);
+  assert.equal(start?.message.actions?.[0].status, 'running');
+  assert.equal(start?.message.actions?.[0].tool, 'Bash');
+
+  const assistant = parse(
+    JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: "grep -m1 '\"name\"' package.json" } }] },
+    }),
+  );
+  assert.equal(assistant?.message.actions?.[0].status, 'running');
+  assert.match(assistant?.message.actions?.[0].label ?? '', /Running: grep/);
+
+  const result = parse(
+    JSON.stringify({
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '  "name": "pig",', is_error: false }] },
+    }),
+  );
+  assert.equal(result?.message.actions?.[0].status, 'done');
+  assert.ok(result?.message.actions?.[0].output?.includes('"name": "pig"'));
+});
+
+test('createTurnParser: antigravity tool step ACTIVE -> DONE carries params and output', () => {
+  const parse = createTurnParser('sess-1', 'antigravity');
+
+  const active = parse(
+    JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        conversation_id: 'c1',
+        step_index: 2,
+        state: 'ACTIVE',
+        step_type: 'tool',
+        tool_name: 'view_file',
+        tool_info: { parameters: { AbsolutePath: '/root/projects/PiG/package.json' } },
+      },
+    }),
+  );
+  assert.equal(active?.message.actions?.length, 1);
+  assert.equal(active?.message.actions?.[0].status, 'running');
+  assert.match(active?.message.actions?.[0].label ?? '', /Reading package\.json/);
+
+  const done = parse(
+    JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        conversation_id: 'c1',
+        step_index: 2,
+        state: 'DONE',
+        step_type: 'tool',
+        tool_name: 'view_file',
+        tool_info: { parameters: { AbsolutePath: '/root/projects/PiG/package.json' }, output: '52 lines, 1559 bytes' },
+      },
+    }),
+  );
+  assert.equal(done?.message.actions?.length, 1, 'same step_index updates the existing action, not a new one');
+  assert.equal(done?.message.actions?.[0].status, 'done');
+  assert.equal(done?.message.actions?.[0].output, '52 lines, 1559 bytes');
+});
+
+test('createTurnParser: antigravity tool ERROR state is surfaced as action status error', () => {
+  const parse = createTurnParser('sess-1', 'antigravity');
+  parse(
+    JSON.stringify({
+      event: 'step_update',
+      step_update: { step_index: 1, state: 'ACTIVE', step_type: 'tool', tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'find /' } } },
+    }),
+  );
+  const errored = parse(
+    JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        step_index: 1,
+        state: 'ERROR',
+        step_type: 'tool',
+        tool_name: 'run_command',
+        tool_info: { parameters: { CommandLine: 'find /' }, output: 'partial output', error: { type: 'TOOL_ERROR', message: 'context canceled' } },
+      },
+    }),
+  );
+  assert.equal(errored?.message.actions?.[0].status, 'error');
+});

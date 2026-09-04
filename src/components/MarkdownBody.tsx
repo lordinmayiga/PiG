@@ -4,6 +4,7 @@ import { Linking, StyleSheet, Text, View } from 'react-native';
 import { useTheme, type TextStyleToken } from '../theme';
 import { CodeBlock } from './CodeBlock';
 import { monoFontFallback, monoFontFamily, useMonoFont } from './monoFont';
+import { classifyLink } from '../utils/fileLinkClassifier';
 
 // Hand-rolled minimal markdown renderer, not a library. Decision: PiG's
 // markdown surface is deliberately small — headings, bold/italic, inline
@@ -114,6 +115,9 @@ interface InlineOpts {
   accentColor: string;
   codeBg: string;
   monoLoaded: boolean;
+  /** Called with a local filesystem path when a file-referencing link is
+   * tapped, instead of Linking.openURL — see fileLinkClassifier. */
+  onOpenFile?: (path: string) => void;
 }
 
 function renderInline(text: string, opts: InlineOpts): ReactNode[] {
@@ -149,17 +153,43 @@ function renderInline(text: string, opts: InlineOpts): ReactNode[] {
         </Text>,
       );
     } else if (linkText !== undefined) {
-      nodes.push(
-        <Text
-          key={`${opts.keyPrefix}-l${n++}`}
-          style={{ color: opts.accentColor, textDecorationLine: 'underline' }}
-          onPress={() => {
-            Linking.openURL(linkUrl).catch(() => {});
-          }}
-        >
-          {linkText}
-        </Text>,
-      );
+      const linkInfo = classifyLink(linkUrl);
+      if (linkInfo.isFileLink && opts.onOpenFile) {
+        // A local file reference (`file://…` or a bare relative path) —
+        // open it in the same FileViewerSheet attachment chips use, not an
+        // external browser. Styled as a path pill (accent tint + mono),
+        // matching ThoughtLine's old path-segment treatment and
+        // session_mockup.html's design.
+        nodes.push(
+          <Text
+            key={`${opts.keyPrefix}-fl${n++}`}
+            testID="markdown-file-link"
+            style={{
+              color: opts.accentColor,
+              backgroundColor: opts.accentColor + '18',
+              fontFamily: opts.monoLoaded ? monoFontFamily.regular : monoFontFallback,
+              fontSize: opts.style.fontSize - 1,
+            }}
+            onPress={() => opts.onOpenFile!(linkInfo.path)}
+          >
+            {' '}
+            {linkText}
+            {' '}
+          </Text>,
+        );
+      } else {
+        nodes.push(
+          <Text
+            key={`${opts.keyPrefix}-l${n++}`}
+            style={{ color: opts.accentColor, textDecorationLine: 'underline' }}
+            onPress={() => {
+              Linking.openURL(linkUrl).catch(() => {});
+            }}
+          >
+            {linkText}
+          </Text>,
+        );
+      }
     } else if (italicStar !== undefined || italicUnderscore !== undefined) {
       nodes.push(
         <Text key={`${opts.keyPrefix}-i${n++}`} style={{ fontStyle: 'italic' }}>
@@ -184,10 +214,15 @@ const HEADING_ROLE: Record<number, 'heading' | 'subheading' | 'bodyMedium'> = {
 
 interface MarkdownBodyProps {
   content: string;
+  /** Opens a local file (from a file-referencing link) in FileViewerSheet
+   * instead of the default Linking.openURL behavior. Omit to render every
+   * link as a plain external one (e.g. inside FileViewerSheet's own markdown
+   * preview, where there's no viewer-within-a-viewer). */
+  onOpenFile?: (path: string) => void;
 }
 
 /** Renders agent-turn markdown per pig-markdown-rendering: rich for agent turns only. */
-export function MarkdownBody({ content }: MarkdownBodyProps) {
+export function MarkdownBody({ content, onOpenFile }: MarkdownBodyProps) {
   const { colors, typeScale, spacing } = useTheme();
   const monoLoaded = useMonoFont();
   const blocks = parseMarkdown(content);
@@ -210,6 +245,7 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                 accentColor: colors.accent,
                 codeBg: colors.card,
                 monoLoaded,
+                onOpenFile,
               })}
             </Text>
           );
@@ -228,6 +264,7 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                   accentColor: colors.accent,
                   codeBg: colors.card,
                   monoLoaded,
+                  onOpenFile,
                 })}
               </Text>
             </View>
@@ -249,6 +286,7 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                       accentColor: colors.accent,
                       codeBg: colors.card,
                       monoLoaded,
+                      onOpenFile,
                     })}
                   </Text>
                 </View>
@@ -265,6 +303,7 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
               accentColor: colors.accent,
               codeBg: colors.card,
               monoLoaded,
+              onOpenFile,
             })}
           </Text>
         );

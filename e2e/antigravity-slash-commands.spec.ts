@@ -36,8 +36,8 @@ async function pairThroughUi(page: Page, host: string, token: string): Promise<v
   await page.getByRole('button', { name: 'Connect' }).click();
 }
 
-test.describe('Antigravity Thinking Stream & Slash Commands Overlay E2E', () => {
-  test('pairs, manages /model & /usage slash commands, and verifies real thinking stream with agy', async ({ page }) => {
+test.describe('Antigravity Slash Commands Overlay E2E', () => {
+  test('pairs, manages /model & /usage slash commands with agy', async ({ page }) => {
     test.setTimeout(90_000);
     // Auto-accept confirmation dialogs
     page.on('dialog', (dialog) => dialog.accept());
@@ -95,28 +95,20 @@ test.describe('Antigravity Thinking Stream & Slash Commands Overlay E2E', () => 
     await expect(modelBadge).toBeVisible();
     await expect(modelBadge).toContainText('Gemini 3.8 Flash (Low)');
 
-    // 4. Send prompt that exercises real thinking and answer generation via agy
-    await composer.fill('Think step by step in <thought> tags first, then output the answer: What is 17 * 23?');
+    // 4. Send an uncoached prompt (no <thought>-tag prompting) — see
+    // AGENT_ACTIONS_STREAM_PLAN.md §0: "thinking" isn't real, uncoached
+    // data on this CLI, but a real tool call is. `agent-actions-stream.spec.ts`
+    // covers the actions feed itself; this test just does simple math so the
+    // slash-command coverage below stays fast and answer-content stays
+    // predictable.
+    await composer.fill('What is 17 times 23?');
     const sendBtn = page.getByTestId('composer-send-btn');
     await sendBtn.click();
-
-    // Verify thinking stream arrives and thinking accordion appears
-    const thinkingAccordion = page.getByTestId('thinking-accordion');
-    await expect(thinkingAccordion).toBeVisible({ timeout: 45_000 });
 
     // Wait for the final agent answer (391) to arrive in the agent bubble
     const agentBubble = page.getByTestId('agent-turn-bubble');
     await expect(agentBubble).toBeVisible({ timeout: 60_000 });
-    await expect(agentBubble).toContainText('391');
-
-    // Verify thinking accordion header exists and can be expanded
-    const thinkingHeader = page.getByTestId('thinking-header');
-    await expect(thinkingHeader).toBeVisible();
-    await thinkingHeader.click();
-
-    // Verify expanded thinking content is visible
-    const thinkingBody = page.getByTestId('thinking-body');
-    await expect(thinkingBody).toBeVisible();
+    await expect(agentBubble).toContainText('391', { timeout: 60_000 });
 
     // 5. Test Slash Command: /usage
     await slashBtn.click();

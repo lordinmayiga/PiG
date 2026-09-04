@@ -71,7 +71,9 @@ import type {
   TranscriptMessage,
   TokenUsage,
   ModelInfo,
+  AgentAction,
 } from '../../src/types/index.js';
+import { startingActionLabel, deriveActionLabel, truncateActionOutput } from '../../src/utils/actionLabels.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -354,6 +356,14 @@ export interface TurnParseState {
   accumulatedThinking: string;
   isThinking: boolean;
   conversationId?: string;
+  /** Tool calls made so far this turn, in order — see AGENT_ACTIONS_STREAM_PLAN.md. */
+  actions: AgentAction[];
+}
+
+/** Finds an in-progress or already-recorded action by id (helper shared by
+ * both CLI parsers below). */
+function findAction(state: TurnParseState, id: string): AgentAction | undefined {
+  return state.actions.find((a) => a.id === id);
 }
 
 /**
@@ -405,6 +415,41 @@ export function parseNdjsonLine(
     case 'stream_event': {
       // Token-level delta, only present with --include-partial-messages.
       const event = obj.event as Record<string, unknown> | undefined;
+
+      // A tool call has started: `content_block_start` with a `tool_use`
+      // block. Its `input` isn't complete yet at this point (that streams in
+      // via `input_json_delta` and lands whole in the `assistant` event
+      // below) — record it now with a generic label so the feed shows
+      // *something* the instant the call begins, per
+      // AGENT_ACTIONS_STREAM_PLAN.md §2.
+      if (event?.type === 'content_block_start') {
+        const block = event.content_block as Record<string, unknown> | undefined;
+        if (block?.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
+          if (!findAction(state, block.id)) {
+            state.actions.push({
+              id: block.id,
+              tool: block.name,
+              label: startingActionLabel(block.name),
+              status: 'running',
+              startedAt: new Date().toISOString(),
+            });
+          }
+          return {
+            sessionId,
+            done: false,
+            message: {
+              id: state.id,
+              role: 'agent',
+              timestamp: new Date().toISOString(),
+              content: state.accumulatedText,
+              actions: [...state.actions],
+              status: 'streaming',
+            },
+          };
+        }
+        return null;
+      }
+
       if (event?.type !== 'content_block_delta') return null;
       const delta = event.delta as Record<string, unknown> | undefined;
       if (delta?.type !== 'text_delta' || typeof delta.text !== 'string') return null;
@@ -417,23 +462,54 @@ export function parseNdjsonLine(
           role: 'agent',
           timestamp: new Date().toISOString(),
           content: state.accumulatedText,
+          actions: state.actions.length > 0 ? [...state.actions] : undefined,
           status: 'streaming',
         },
       };
     }
 
     case 'assistant': {
-      // The complete text for this turn's assistant message. Still not the
-      // turn-completion signal (see module doc) — `type: 'result'` is.
+      // The complete text (and, for a tool-use turn, complete tool_use
+      // blocks with their full `input`) for this turn's assistant message.
+      // Still not the turn-completion signal (see module doc) — `type:
+      // 'result'` is.
       const message = obj.message as Record<string, unknown> | undefined;
       const contentBlocks = message?.content;
       if (!Array.isArray(contentBlocks)) return null;
+
+      let sawToolUse = false;
+      for (const block of contentBlocks) {
+        if (typeof block !== 'object' || block === null) continue;
+        const b = block as Record<string, unknown>;
+        if (b.type !== 'tool_use' || typeof b.id !== 'string' || typeof b.name !== 'string') continue;
+        sawToolUse = true;
+        const params = (b.input && typeof b.input === 'object' ? b.input : {}) as Record<string, unknown>;
+        const { label, detail } = deriveActionLabel(b.name, params);
+        const existing = findAction(state, b.id);
+        if (existing) {
+          existing.label = label;
+          existing.detail = detail;
+        } else {
+          state.actions.push({
+            id: b.id,
+            tool: b.name,
+            label,
+            detail,
+            status: 'running',
+            startedAt: new Date().toISOString(),
+          });
+        }
+      }
+
       const text = contentBlocks
         .filter((b): b is { type: string; text: string } => typeof b === 'object' && b !== null && (b as Record<string, unknown>).type === 'text')
         .map((b) => b.text)
         .join('');
-      if (text.length === 0) return null;
-      state.accumulatedText = text;
+      if (text.length > 0) {
+        state.accumulatedText = text;
+      } else if (!sawToolUse) {
+        return null;
+      }
       return {
         sessionId,
         done: false,
@@ -442,6 +518,49 @@ export function parseNdjsonLine(
           role: 'agent',
           timestamp: new Date().toISOString(),
           content: state.accumulatedText,
+          actions: state.actions.length > 0 ? [...state.actions] : undefined,
+          status: 'streaming',
+        },
+      };
+    }
+
+    case 'user': {
+      // A tool's result, echoed back as a synthetic user turn (see module
+      // doc's verified-shape catalogue update) — matches a `tool_use_id` to
+      // the action recorded above and marks it done/error.
+      const message = obj.message as Record<string, unknown> | undefined;
+      const contentBlocks = message?.content;
+      if (!Array.isArray(contentBlocks)) return null;
+      let matched = false;
+      for (const block of contentBlocks) {
+        if (typeof block !== 'object' || block === null) continue;
+        const b = block as Record<string, unknown>;
+        if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue;
+        const action = findAction(state, b.tool_use_id);
+        if (!action) continue;
+        matched = true;
+        action.status = b.is_error === true ? 'error' : 'done';
+        const content = b.content;
+        if (typeof content === 'string') {
+          action.output = truncateActionOutput(content);
+        } else if (Array.isArray(content)) {
+          const text = content
+            .filter((c): c is { type: string; text: string } => typeof c === 'object' && c !== null && (c as Record<string, unknown>).type === 'text')
+            .map((c) => c.text)
+            .join('');
+          if (text) action.output = truncateActionOutput(text);
+        }
+      }
+      if (!matched) return null;
+      return {
+        sessionId,
+        done: false,
+        message: {
+          id: state.id,
+          role: 'agent',
+          timestamp: new Date().toISOString(),
+          content: state.accumulatedText,
+          actions: [...state.actions],
           status: 'streaming',
         },
       };
@@ -461,6 +580,7 @@ export function parseNdjsonLine(
         role: 'agent',
         timestamp: new Date().toISOString(),
         content: state.accumulatedText,
+        actions: state.actions.length > 0 ? [...state.actions] : undefined,
         status: success ? 'done' : 'error',
       };
       return { sessionId, message, done: true };
@@ -468,8 +588,8 @@ export function parseNdjsonLine(
 
     default:
       // 'system', 'rate_limit_event', and other stream_event subtypes
-      // (message_start/content_block_start/content_block_stop/message_delta/
-      // message_stop) are metadata, not transcript content.
+      // (message_start/content_block_stop/message_delta/message_stop) are
+      // metadata, not transcript content.
       return null;
   }
 }
@@ -548,6 +668,63 @@ function parseAntigravityLine(
       if (typeof stepUpdate?.conversation_id === 'string') {
         state.conversationId = stepUpdate.conversation_id;
       }
+
+      // A real tool call — verified live shape (AGENT_ACTIONS_STREAM_PLAN.md
+      // §0): each call is one self-contained ACTIVE -> DONE/ERROR pair, keyed
+      // by `step_index`, carrying `tool_name` + `tool_info.parameters` and
+      // (on completion) `tool_info.output`. This is the real "what is the
+      // agent doing right now" signal — unlike thinking, always present.
+      if (stepUpdate?.step_type === 'tool') {
+        const toolName = typeof stepUpdate.tool_name === 'string' ? stepUpdate.tool_name : 'tool';
+        const toolInfo = (stepUpdate.tool_info && typeof stepUpdate.tool_info === 'object' ? stepUpdate.tool_info : {}) as Record<string, unknown>;
+        const params = (toolInfo.parameters && typeof toolInfo.parameters === 'object' ? toolInfo.parameters : {}) as Record<string, unknown>;
+        const stepIndex = stepUpdate.step_index;
+        const actionId = typeof stepIndex === 'number' ? `step-${stepIndex}` : `tool-${state.actions.length}`;
+        const toolState = stepUpdate.state;
+        const output = typeof toolInfo.output === 'string' ? truncateActionOutput(toolInfo.output) : undefined;
+
+        if (toolState === 'ACTIVE') {
+          if (!findAction(state, actionId)) {
+            const { label, detail } = deriveActionLabel(toolName, params);
+            state.actions.push({ id: actionId, tool: toolName, label, detail, status: 'running', startedAt: new Date().toISOString() });
+          }
+        } else if (toolState === 'DONE' || toolState === 'ERROR') {
+          const existing = findAction(state, actionId);
+          if (existing) {
+            existing.status = toolState === 'ERROR' ? 'error' : 'done';
+            if (output) existing.output = output;
+          } else {
+            // The ACTIVE event for this step was missed/coalesced — still
+            // record the completed call rather than dropping it silently.
+            const { label, detail } = deriveActionLabel(toolName, params);
+            state.actions.push({
+              id: actionId,
+              tool: toolName,
+              label,
+              detail,
+              status: toolState === 'ERROR' ? 'error' : 'done',
+              output,
+              startedAt: new Date().toISOString(),
+            });
+          }
+        } else {
+          return null;
+        }
+
+        return {
+          sessionId,
+          done: false,
+          message: {
+            id: state.id,
+            role: 'agent',
+            timestamp: new Date().toISOString(),
+            content: state.accumulatedText,
+            actions: [...state.actions],
+            status: 'streaming',
+          },
+        };
+      }
+
       const textDelta = stepUpdate?.text_delta;
       const thoughtDelta = stepUpdate?.thought_delta || (stepUpdate?.step_type === 'thought' ? textDelta : undefined);
       const usageRaw = (stepUpdate?.usage || obj.usage) as Record<string, number> | undefined;
@@ -574,6 +751,7 @@ function parseAntigravityLine(
             timestamp: new Date().toISOString(),
             content: state.accumulatedText,
             thinking: state.accumulatedThinking,
+            actions: state.actions.length > 0 ? [...state.actions] : undefined,
             status: 'streaming',
             usage,
           },
@@ -620,6 +798,7 @@ function parseAntigravityLine(
           timestamp: new Date().toISOString(),
           content: state.accumulatedText,
           thinking: state.accumulatedThinking.length > 0 ? state.accumulatedThinking : undefined,
+          actions: state.actions.length > 0 ? [...state.actions] : undefined,
           status: 'streaming',
           usage,
         },
@@ -661,6 +840,7 @@ function parseAntigravityLine(
         timestamp: new Date().toISOString(),
         content: state.accumulatedText,
         thinking: state.accumulatedThinking.length > 0 ? state.accumulatedThinking : undefined,
+        actions: state.actions.length > 0 ? [...state.actions] : undefined,
         status: success ? 'done' : 'error',
         usage,
       };
@@ -690,6 +870,7 @@ export function createTurnParser(
     accumulatedText: '',
     accumulatedThinking: '',
     isThinking: false,
+    actions: [],
   };
   return (line: string) => parseNdjsonLine(line, sessionId, state, agent);
 }
