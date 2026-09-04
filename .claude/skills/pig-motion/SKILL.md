@@ -98,3 +98,11 @@ PiG is a mobile terminal & agent workstation, not a consumer social app. Motion 
 1. **Import directly from theme**: Always use `import { usePressScale, useFadeSlideIn, useStatusDotPulse, useTypingDotPulse } from '../theme'`.
 2. **Never inline arbitrary `Animated.timing` without reduced motion checks**.
 3. **Wrap list items**: When implementing flatlists, wrap list items in `Animated.View` with `useFadeSlideIn` for consistent entry feel.
+
+## Cross-skill guardrails
+
+**Non-negotiable.** Every `pig-*` skill's rules are mandatory, not advisory. Violating one — for a deadline, because a screen "looks better" without it, as a "temporary" exception, because the violation is small — is never acceptable. Do not ship code, a mockup, or a skill edit that contradicts any `pig-*` skill. If two skills genuinely conflict, stop and raise it before writing code either way — silently picking one skill over another is exactly the failure mode this rule exists to prevent.
+
+- Every animation here must also satisfy the other `pig-*` skills — never trade a motion rule off against color, typography, layout, or icon rules to make one screen work; a perceived conflict is a bug in the skills to raise, not a license to violate either.
+- **No emojis anywhere in the app**, including as a stand-in for a status/motion cue (a pulsing dot, a checkmark bounce) — those are color + Lucide icon + text per `pig-color-system` and `pig-icons-branding`.
+- **Icons are always `lucide-react-native`**, animated via Reanimated 3 transforms/opacity, never swapped for an animated emoji or GIF.

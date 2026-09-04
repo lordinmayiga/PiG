@@ -3,11 +3,11 @@ import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'r
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import { Mic, Plus, Send, X } from 'lucide-react-native';
+import { Mic, Plus, Send, SquareSlash, X } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
 import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
-import { sendRouteInput, classifyLocally, type RouteInputAction } from '../network/routeInput';
+import { sendRouteInput, type RouteInputAction } from '../network/routeInput';
 import { getBridgeClient } from '../network/bridgeConnection';
 import { loadBridgeCredentials, clearBridgeCredentials } from '../secureStorage';
 import type { FileAttachment } from '../types';
@@ -35,6 +35,8 @@ export interface ComposerProps {
    * up somewhere instead of silently vanishing.
    */
   onAction?: (action: RouteInputAction) => void;
+  /** Called when the user taps the slash button or types '/' into an empty composer. */
+  onOpenSlash?: () => void;
 }
 
 function kindForMimeType(mimeType: string): FileAttachment['kind'] {
@@ -61,7 +63,7 @@ let nextLocalId = 1;
  * collapses to 0 while the keyboard is visible instead of stacking on top of
  * the keyboard's own height (would otherwise leave a dead gap above it).
  */
-export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
+export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerProps) {
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
   const insets = useSafeAreaInsets();
   const keyboardVisible = useKeyboardVisible();
@@ -260,7 +262,12 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
 
         <TextInput
           value={text}
-          onChangeText={setText}
+          onChangeText={(val) => {
+            setText(val);
+            if (val === '/') {
+              onOpenSlash?.();
+            }
+          }}
           placeholder="Message the agent…"
           placeholderTextColor={colors.inkPlaceholder}
           multiline
@@ -273,17 +280,35 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
         />
 
         <View style={[styles.actionRow, { paddingHorizontal: spacing.xxs }]}>
-          <Pressable
-            onPress={handleAttachPress}
-            accessibilityRole="button"
-            accessibilityLabel="Attach a photo or file"
-            style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
-          >
-            <Icon icon={Plus} size={20} color={colors.inkSecondary} />
-          </Pressable>
+          <View style={styles.leftActions}>
+            <Pressable
+              testID="composer-attach-btn"
+              onPress={handleAttachPress}
+              accessibilityRole="button"
+              accessibilityLabel="Attach a photo or file"
+              style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
+            >
+              <Icon icon={Plus} size={20} color={colors.inkSecondary} />
+            </Pressable>
+
+            <Pressable
+              testID="composer-slash-btn"
+              onPress={onOpenSlash}
+              accessibilityRole="button"
+              accessibilityLabel="Slash commands"
+              style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
+            >
+              {/* Slash-commands trigger — a Lucide icon per pig-icons-branding,
+                  not a "/" text glyph in a mono font (that was a pig-typography
+                  violation: mono outside a code block/inline-code/file-viewer,
+                  used as a "techy" flourish). */}
+              <Icon icon={SquareSlash} size={20} color={colors.inkSecondary} />
+            </Pressable>
+          </View>
 
           {canSend ? (
             <Pressable
+              testID="composer-send-btn"
               onPress={handleSend}
               accessibilityRole="button"
               accessibilityLabel="Send message"
@@ -296,6 +321,7 @@ export function Composer({ sessionId, onSend, onAction }: ComposerProps) {
             </Pressable>
           ) : (
             <Pressable
+              testID="composer-mic-btn"
               onPress={() => {}}
               accessibilityRole="button"
               accessibilityLabel="Dictate (not yet available)"
@@ -318,6 +344,11 @@ const styles = StyleSheet.create({
   attachmentRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+  },
+  leftActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   pendingChip: {
     flexDirection: 'row',

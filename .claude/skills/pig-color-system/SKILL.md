@@ -55,8 +55,31 @@ Full rationale and contrast math: `DESIGN.md` in the project root. This skill is
 
 Light mode has no lighter-than-white step — elevation there is carried by scrim + shadow, not color.
 
+## Recessed fills (search bars, icon chips, close buttons, badge pills)
+
+`neutral[100]`/`neutral[200]` are **light-mode-only** steps ("Card fill on Snow", "Borders/dividers, light") — they have no dark counterpart, and using them unconditionally in both modes is the single most common bug in this system (found 2026-09-04 in the slash-command sheet, the thinking accordion, and the transcript header's model badge, all rendering a bright `#f2ebe8` patch on the Onyx canvas).
+
+For any surface that sits one step up from `canvas` but isn't a full `card`/`elevated` block — a search bar fill, an icon-wrap circle, a close button, a badge pill — **reuse `surface.card` + `border`** for both modes. Don't reach for `neutral[100]`/`[200]` outside their documented light-only roles above, and don't invent a new neutral step to cover this — the existing elevation pair already does the job.
+
+## Accent tint (selected-row highlight, inline highlight pills)
+
+Don't hand-roll a tint with string concatenation (`colors.accent + '15'`, `+ '25'`, etc.) — it's unvalidated in either mode and was found in three places (selected-model row, thought-line path pill) doing exactly that. Use the validated token instead:
+
+| Name | Hex | Role |
+|---|---|---|
+| Accent Tint — light | `#f2e3f3` | Selected/highlighted fill under accent-colored text or icons, light mode (14.7:1 ink-on-tint) |
+| Accent Tint — dark | `#3a2a3c` | Same role, dark mode (13.9:1 ink-on-tint) |
+
 ## Rules
 
 - Status is always **dot + text label**, never color alone.
 - Semantic colors (success/warning/destructive) are never reused for anything else (no "5th category color").
-- Any *new* color added later must be checked in both directions (as text on its mode's canvas, and as a fill with ink text on top) against a 4.5:1 AA floor before use — follow the same two-step light/dark pattern used for Velvet Orchid, Rosy Copper, and Amber Ochre above; a color failing on one surface almost always needs its own dark-mode step, not a workaround.
+- Any *new* color added later must be checked in both directions (as text on its mode's canvas, and as a fill with ink text on top) against a 4.5:1 AA floor before use — follow the same two-step light/dark pattern used for Velvet Orchid, Rosy Copper, and Amber Ochre above; a color failing on one surface almost always needs its own dark-mode step, not a workaround. This includes tints and alpha fills — a string-concatenated `color + 'NN'` is a new color and needs the same check, not an exemption from it.
+
+## Cross-skill guardrails
+
+**Non-negotiable.** Every `pig-*` skill's rules are mandatory, not advisory. Violating one — for a deadline, because a screen "looks better" without it, as a "temporary" exception, because the violation is small — is never acceptable. Do not ship code, a mockup, or a skill edit that contradicts any `pig-*` skill. If two skills genuinely conflict, stop and raise it before writing code either way — silently picking one skill over another is exactly the failure mode this rule exists to prevent.
+
+- Every design decision here must also satisfy the other `pig-*` skills — never trade a color rule off against motion, typography, layout, or icon rules to make one screen work. A perceived conflict between two skills is a bug in the skills to raise, not a signal to violate either.
+- **No emojis anywhere in the app.** Status, semantic color, and every other visual signal here is conveyed with color + Lucide icon + text, never an emoji standing in for a color or icon.
+- **Icons are always `lucide-react-native`** via the shared `Icon` component, colored from these tokens — never a hardcoded hex on an icon, never another icon set.

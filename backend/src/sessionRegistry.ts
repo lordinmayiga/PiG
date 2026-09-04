@@ -18,7 +18,7 @@
  * than crash).
  */
 
-import type { AgentKind, TranscriptMessage } from '../../src/types/index.js';
+import type { AgentKind, TranscriptMessage, TokenUsage } from '../../src/types/index.js';
 import type { SpawnedAgentHandle } from './agentProcess.js';
 
 export interface ActiveSessionContext {
@@ -26,6 +26,9 @@ export interface ActiveSessionContext {
   agent: AgentKind;
   cwd: string;
   transcript: TranscriptMessage[];
+  model?: string;
+  effort?: string;
+  usage: TokenUsage;
   /** Set while a turn's subprocess is running; cleared on exit. Lets a
    * future `kill_session`/interrupt path (see actions.ts's documented
    * placeholder) reach the live agent process, not just the tmux session. */
@@ -46,7 +49,21 @@ const sessions = new Map<string, ActiveSessionContext>();
 export function getOrCreateSession(sessionId: string, cwd: string, agent: AgentKind): ActiveSessionContext {
   let ctx = sessions.get(sessionId);
   if (!ctx) {
-    ctx = { sessionId, agent, cwd, transcript: [] };
+    ctx = {
+      sessionId,
+      agent,
+      cwd,
+      transcript: [],
+      model: 'gemini-3.8-flash',
+      effort: 'low',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        totalTokens: 0,
+      },
+    };
     sessions.set(sessionId, ctx);
   }
   return ctx;
@@ -94,4 +111,51 @@ export function setActiveHandle(sessionId: string, handle: SpawnedAgentHandle | 
   const ctx = sessions.get(sessionId);
   if (!ctx) return;
   ctx.activeAgentHandle = handle;
+}
+
+export function setSessionModel(sessionId: string, model: string, effort?: string): void {
+  const ctx = sessions.get(sessionId);
+  if (!ctx) return;
+  ctx.model = model;
+  if (effort !== undefined) {
+    ctx.effort = effort;
+  }
+}
+
+export function getSessionModel(sessionId: string): { model: string; effort: string } {
+  const ctx = sessions.get(sessionId);
+  return {
+    model: ctx?.model ?? 'gemini-3.8-flash',
+    effort: ctx?.effort ?? 'low',
+  };
+}
+
+export function accumulateUsage(sessionId: string, usage: Partial<TokenUsage>): TokenUsage {
+  const ctx = sessions.get(sessionId);
+  if (!ctx) {
+    return {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      thinkingTokens: usage.thinkingTokens ?? 0,
+      cacheReadTokens: usage.cacheReadTokens ?? 0,
+      totalTokens: usage.totalTokens ?? 0,
+    };
+  }
+  ctx.usage.inputTokens += usage.inputTokens ?? 0;
+  ctx.usage.outputTokens += usage.outputTokens ?? 0;
+  ctx.usage.thinkingTokens += usage.thinkingTokens ?? 0;
+  ctx.usage.cacheReadTokens += usage.cacheReadTokens ?? 0;
+  ctx.usage.totalTokens += usage.totalTokens ?? 0;
+  return { ...ctx.usage };
+}
+
+export function getSessionUsage(sessionId: string): TokenUsage {
+  const ctx = sessions.get(sessionId);
+  return ctx ? { ...ctx.usage } : {
+    inputTokens: 0,
+    outputTokens: 0,
+    thinkingTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 0,
+  };
 }

@@ -262,5 +262,48 @@ test('WebSocket Endpoints: fs_list, fs_read, set_openrouter_key, get_openrouter_
   assert.equal(getKeyAck.payload.hasKey, true);
   assert.equal(getKeyAck.payload.keySuffix, '3456');
 
+  // 7. Test command_search envelope
+  ws.send(
+    JSON.stringify({
+      v: 1,
+      type: 'command_search',
+      id: 'test-cmd-search-1',
+      ts: Date.now(),
+      payload: { query: 'model' },
+    }),
+  );
+  const cmdSearchRes = await waitForMsg<{ query: string; commands: Array<{ name: string }>; models?: Array<{ id: string }> }>(ws, 'command_search_result');
+  assert.ok(cmdSearchRes.payload.commands.some((c) => c.name === '/model'));
+  assert.ok(Array.isArray(cmdSearchRes.payload.models));
+  assert.ok(cmdSearchRes.payload.models.some((m) => m.id.includes('gemini-3.8-flash')));
+
+  // 8. Test set_session_model envelope
+  ws.send(
+    JSON.stringify({
+      v: 1,
+      type: 'set_session_model',
+      id: 'test-set-model-1',
+      ts: Date.now(),
+      payload: { sessionId: 'test-sess-1', model: 'gemini-3.8-flash-low', effort: 'low' },
+    }),
+  );
+  const setModelAck = await waitForMsg<{ ok: boolean; model: string }>(ws, 'set_session_model_ack');
+  assert.equal(setModelAck.payload.ok, true);
+  assert.equal(setModelAck.payload.model, 'gemini-3.8-flash-low');
+
+  // 9. Test get_session_usage envelope
+  ws.send(
+    JSON.stringify({
+      v: 1,
+      type: 'get_session_usage',
+      id: 'test-get-usage-1',
+      ts: Date.now(),
+      payload: { sessionId: 'test-sess-1' },
+    }),
+  );
+  const getUsageAck = await waitForMsg<{ sessionId: string; usage: { totalTokens: number } }>(ws, 'get_session_usage_ack');
+  assert.equal(getUsageAck.payload.sessionId, 'test-sess-1');
+  assert.equal(typeof getUsageAck.payload.usage.totalTokens, 'number');
+
   ws.close();
 });

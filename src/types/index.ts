@@ -36,15 +36,26 @@ export interface FileAttachment {
   kind: 'image' | 'text' | 'other';
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+}
+
 export interface TranscriptMessage {
   id: string;
   role: MessageRole;
   timestamp: string; // ISO 8601
   /** Markdown body (agent turns may include fenced code blocks). */
   content: string;
+  /** Internal thinking stream or reasoning steps for this turn. */
+  thinking?: string;
   /** Only meaningful for role: 'agent'. */
   status?: AgentTurnStatus;
   attachments?: FileAttachment[];
+  usage?: TokenUsage;
 }
 
 export type FileNodeType = 'file' | 'folder';
@@ -99,7 +110,10 @@ export type AppToBackendEventType =
   | 'fs_read'
   | 'fs_raw_url_request'
   | 'set_openrouter_key'
-  | 'get_openrouter_key';
+  | 'get_openrouter_key'
+  | 'command_search'
+  | 'set_session_model'
+  | 'get_session_usage';
 
 /** Events the backend sends to the app. */
 export type BackendToAppEventType =
@@ -114,7 +128,10 @@ export type BackendToAppEventType =
   | 'fs_read_result'
   | 'fs_raw_url_result'
   | 'set_openrouter_key_ack'
-  | 'get_openrouter_key_ack';
+  | 'get_openrouter_key_ack'
+  | 'command_search_result'
+  | 'set_session_model_ack'
+  | 'get_session_usage_ack';
 
 export type BridgeEventType = AppToBackendEventType | BackendToAppEventType;
 
@@ -272,5 +289,61 @@ export interface FsRawUrlResultPayload {
   url: string;
   path: string;
   error?: string;
+}
+
+export interface SlashCommandItem {
+  name: string;
+  description: string;
+  badge?: string;
+  icon?: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  description?: string;
+  badge?: string;
+  effort?: string;
+}
+
+/** app -> backend: search terminal/slash commands */
+export interface CommandSearchPayload {
+  query: string;
+  sessionId?: string;
+}
+
+/** backend -> app: search results for terminal/slash commands */
+export interface CommandSearchResultPayload {
+  query: string;
+  commands: SlashCommandItem[];
+  models?: ModelInfo[];
+  usage?: TokenUsage;
+}
+
+/** app -> backend: switch active model for session */
+export interface SetSessionModelPayload {
+  sessionId: string;
+  model: string;
+  effort?: string;
+}
+
+/** backend -> app: confirmation of model switch */
+export interface SetSessionModelAckPayload {
+  ok: boolean;
+  sessionId: string;
+  model: string;
+  effort?: string;
+  error?: string;
+}
+
+/** app -> backend: request session token usage */
+export interface GetSessionUsagePayload {
+  sessionId: string;
+}
+
+/** backend -> app: session token usage */
+export interface GetSessionUsageAckPayload {
+  sessionId: string;
+  usage: TokenUsage;
 }
 

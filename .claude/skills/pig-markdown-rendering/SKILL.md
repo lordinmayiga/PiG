@@ -30,3 +30,12 @@ A file — yours or one the agent produced — shows as an inline chip (image th
 - **Anything else** (PDF, zip, binary) → no rendering attempt — the popup shows name/size/type and a Download action only. A real in-app PDF renderer was explicitly cut as scope not worth a native dependency for what Download + the OS share sheet already covers.
 
 Download always hands off to the **OS share sheet** ("Save to…") rather than writing silently to the device's Downloads folder — avoids needing broad storage permissions and matches how most Android apps do it.
+
+## Cross-skill guardrails
+
+**Non-negotiable.** Every `pig-*` skill's rules are mandatory, not advisory. Violating one — for a deadline, because a screen "looks better" without it, as a "temporary" exception, because the violation is small — is never acceptable. Do not ship code, a mockup, or a skill edit that contradicts any `pig-*` skill. If two skills genuinely conflict, stop and raise it before writing code either way — silently picking one skill over another is exactly the failure mode this rule exists to prevent.
+
+- Every rendering decision here must also satisfy the other `pig-*` skills — never trade this skill's rules off against another to make one screen work; a perceived conflict is a bug in the skills to raise, not a license to violate either.
+- Roboto Mono stays scoped exactly as `pig-typography` defines it — a code block, an inline `code` span, or the file/text viewer. A path or number mentioned in prose (agent turn text, a thinking-stream line) is **not** one of those three contexts on its own; don't reach for mono there just because it looks file-related — highlight it by color/pill instead, per `pig-color-system`.
+- **No emojis anywhere in the app**, including in rendered markdown treatment (no emoji favicon/bullet substitutes) or file-type icons — those are Lucide icons.
+- **Icons are always `lucide-react-native`** for file chips, copy buttons, and language labels.

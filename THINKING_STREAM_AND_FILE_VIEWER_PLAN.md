@@ -1,108 +1,130 @@
-# Implementation Plan: PiG Thinking Stream, Terminal Command Sync, & E2E Testing
+# Implementation Plan: PiG Real-Data Thinking Stream, Terminal Command Sync, & E2E Testing
 
 This plan specifies the architecture and implementation for:
-1. **Dynamic Growing 7-Line Thinking Stream with Thought Syntax Highlighting**
-2. **Zero-Lag Terminal Slash Command Synchronization** (`/model` and `/usage`)
-3. **Exact E2E Playwright Tests** executed strictly in **Antigravity (`agy`)** using **Gemini 3.8 Flash (`--model=gemini-3.8-flash --effort=low`)**.
+1. **Real-Data Backend Architecture (Subprocess Piped NDJSON, Live `agy` Model Discovery, & Token Usage Accumulator)**
+2. **Dynamic Growing 7-Line Thinking Stream with Thought Syntax Highlighting & Auto-Collapse**
+3. **Zero-Lag Two-Tier Slash Command Synchronization** (`/model` and `/usage` with real backend data)
+4. **On-Demand File Viewer & Attachment Chips** (backed by real `/files/raw` tickets & `fs_read`)
+5. **Exact E2E Playwright Tests** executed strictly in **Antigravity (`agy`)** using **Gemini 3.8 Flash (`--model=gemini-3.8-flash --effort=low`)**.
 
 ---
 
-## 1. Dynamic Growing Thinking Stream with Syntax Highlighting
+## 1. Backend Real-Data Architecture & Protocols
 
-### Dynamic Growth & Rolling Window
-- **Initial State**: When the first thought token/line arrives, the thinking container height fits **only 1 line** (~22px).
-- **Growth Phase (Lines 1 → 7)**: As lines 2, 3, 4, 5, 6, and 7 arrive, the container smoothly expands in height using Reanimated timing (`pig-motion` duration 180ms ease).
-- **Rolling Teleprompter (Lines 8+)**: Once 7 lines are present, any incoming line causes the oldest line (at the top) to smoothly slide up and fade out (`opacity: 0, translateY: -10px, marginTop: -22px`), while the new line enters at the bottom. The container maintains a locked height of exactly 7 lines.
-- **Auto-Collapse**: The instant the first answer token arrives, the thinking box smoothly collapses to `[ (Brain Icon) Thought for Xs  ▾ ]`.
-- **Full History on Demand**: Tapping the collapsed header smoothly expands to inspect the entire thought trace with vertical scrolling.
+To ensure all features work with **100% real data right out of the bat** (no hardcoded mocks in production paths):
 
-### Thought Syntax Highlighting Tokens (from `pig-color-system` & `pig-typography`)
-- **Action Verbs & Keywords** (`Checking`, `Inspecting`, `Evaluating`, `Testing`, `Turn complete`): Bold primary ink (`var(--ink)`, Onest 600).
-- **File Paths & Output Folders** (`.pig-output/`, `backend/src/server.ts`, `.md`, `.ts`): Muted Velvet Orchid pill (`var(--accent)` with `var(--accent-tint)` background, Roboto Mono).
+### A. Real Model Discovery via Live `agy models`
+- **Subcommand**: The bridge executes `agy models` asynchronously to discover all models installed on the VPS:
+  - `gemini-3.8-flash-low`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-high`
+  - `gemini-3.7-flash-low`, `gemini-3.7-flash-medium`, `gemini-3.7-flash-high`
+  - `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, etc.
+- **Caching**: Output is cached in memory with a 60-second TTL to guarantee 0ms response latency on slash search queries.
+- **Configurable Session Model**: `ActiveSessionContext` in `sessionRegistry.ts` stores the session's active model (`default: 'gemini-3.8-flash'`) and reasoning effort (`default: 'low'`).
+- **Bridge Envelopes**:
+  - App -> Bridge: `set_session_model` `{ sessionId, model, effort }`
+  - Bridge -> App: `set_session_model_ack` `{ ok: true, model, effort }`
+
+### B. Real Token Usage Accumulator (`/usage`)
+- **NDJSON Event Ingestion**: `agy` emits real token usage statistics on each `step_update` and terminal `result` event:
+  ```json
+  "usage": {
+    "input_tokens": 13896,
+    "output_tokens": 606,
+    "thinking_tokens": 438,
+    "cache_read_tokens": 0,
+    "total_tokens": 14502
+  }
+  ```
+- **Live Accumulation**: `sessionRegistry.ts` accumulates token consumption per session across turns (`inputTokens`, `outputTokens`, `thinkingTokens`, `cacheReadTokens`, `totalTokens`).
+- **Real-Time Push & Query**:
+  - Emitted directly on `TranscriptMessage.usage` and `TranscriptChunkPayload`.
+  - Available over the bridge via `command_search` or `session_usage_request`.
+
+### C. Live Thinking Stream & Thought Extraction
+- **Stream Parser Separation**:
+  - `parseAntigravityLine` in `agentProcess.ts` inspects `step_update`:
+    - Separates reasoning/thinking tokens (detected via `<thought>` delimiters or `step_type: 'thought'`) from the public answer `text_delta`.
+    - Streams `message.thinking` deltas during the reasoning phase.
+    - Transitions to streaming `message.content` the instant answer deltas arrive.
+- **CLI Flags for Antigravity**:
+  - Always spawns `agy` with:
+    `--output-format stream-json --dangerously-skip-permissions --model=gemini-3.8-flash --effort=low --print=<prompt>`
+
+### D. Zero-Lag Two-Tier Slash Command Bridge Event
+- App -> Bridge: `command_search` `{ query: string, sessionId?: string }`
+- Bridge -> App: `command_search_result` `{ query, commands, models?, usage? }`
+- **Tier 1 (Instant 0ms)**: Client filters its memory cache on every keystroke.
+- **Tier 2 (150ms Debounce)**: Bridge checks session registry for live usage and active models list, syncing live state back to the sheet.
+
+---
+
+## 2. Dynamic Growing Thinking Stream with Syntax Highlighting
+
+### Dynamic Growth & Rolling Window (Reanimated 3)
+- **Initial State**: Fits 1 line (~22px) when first thought delta arrives.
+- **Growth Phase (Lines 1 → 7)**: Smoothly expands container height (`duration: 180ms`, cubic ease per `pig-motion`).
+- **Rolling Teleprompter (Lines 8+)**: At 7 visible lines, incoming lines smoothly translate upward (`translateY: -10px`, `opacity: 0`, `marginTop: -22px`) while the new line enters at bottom (`opacity: 0 -> 1`, `translateY: 8 -> 0`). Maximum locked height is 7 lines.
+- **Auto-Collapse**: On arrival of the first non-thought answer token, the thinking box collapses to `[ (Brain Icon) Thought for Xs  ▾ ]` within 200ms.
+- **On-Demand Inspection**: Tapping the header expands the full thought trace with smooth vertical scrolling.
+- **Theme Support**: Implements both Light and Dark mode tokens strictly from `pig-color-system` (`--canvas`, `--card`, `--neutral-100`, `--accent`, `--accent-tint`, `--warning`).
+
+### Thought Syntax Highlighting Tokens
+- **Action Verbs** (`Checking`, `Inspecting`, `Evaluating`, `Testing`, `Turn complete`): Bold primary ink (`var(--ink)`, Onest 600).
+- **File Paths & Folders** (`.pig-output/`, `backend/src/server.ts`, `.md`, `.ts`): Muted Velvet Orchid pill (`var(--accent)` with `var(--accent-tint)` background, Roboto Mono).
 - **Numbers & Durations** (`60s`, `1.10`, `8787`, `7 lines`): Amber Ochre (`var(--warning)` / `#8b6118` light, `#d2962d` dark, Roboto Mono).
 - **Code & Identifiers** (backtick identifiers `` `mintRawFileTicket` ``): Flat neutral code-surface background (`var(--code-surface)` with `var(--border)`).
 
 ---
 
-## 2. Terminal Slash Command Synchronization (Zero-Lag Architecture)
+## 3. Terminal Slash Command Synchronization & UI
 
-### The Challenge
-Searching commands from the actual terminal/agent process in real time risks UI latency if every keystroke blocks on a round-trip to the VPS/tmux pane.
+### Real Composer Updates
+- Added the **`/`** button directly next to the **`+`** button in `Composer.tsx`.
+- Typing `/` into the composer or tapping the `/` button immediately opens the `SlashCommandOverlay`.
 
-### The Solution: Two-Tier Command Synchronization
-
-```mermaid
-flowchart TD
-    A["User types in / Search Input"] --> B["Tier 1: Instant Client Cache Filter (0ms Latency)"]
-    B --> C["Render Filtered List Immediately"]
-    A --> D["Tier 2: Debounce (150ms)"]
-    D --> E["WebSocket Bridge: 'command_search'"]
-    E --> F["Backend: Query Session / Terminal Registry (tmux & agy tools)"]
-    F --> G["Bridge: 'command_search_result'"]
-    G --> C
-```
-
-1. **Tier 1: Instant Client Cache Filter (0ms Latency)**:
-   - On session load, PiG preloads all known slash commands, agent tools, and terminal built-ins (`/model`, `/usage`, `/cost`, `/compact`, `/clear`, `/doctor`).
-   - Every keystroke immediately filters the visible list in-memory with zero network latency.
-2. **Tier 2: Asynchronous Debounced Terminal Synchronization (150ms)**:
-   - As the user types, a 150ms debounce dispatches `command_search` over the bridge.
-   - The backend checks the active tmux session / agent environment:
-     - For **`/model`**: reads models available to `agy` (`gemini-3.8-flash`, `gemini-3.7-flash`, etc.) and formats them.
-     - For **`/usage`**: queries the live session token accumulator (input tokens, output tokens, thinking tokens, cache read).
-   - The backend responds with `command_search_result`, seamlessly updating the overlay list without UI stutter.
-3. **Execution on Select**:
-   - Selecting `/model` opens the model picker directly in the overlay.
-   - Selecting `/usage` displays the token breakdown card directly in the overlay.
-   - Other terminal commands cleanly dispatch via `route_input` or tmux without leaking search keystrokes to the terminal.
+### Zero-Lag Command Overlay (`SlashCommandOverlay.tsx`)
+- Instant filtered listing of commands (`/model`, `/usage`, `/cost`, `/compact`, `/clear`, `/doctor`).
+- Debounced bridge query fetching:
+  - **`/model` picker**: Real models fetched from `agy models` on the VPS. Selecting updates the session model badge.
+  - **`/usage` view**: Live token metrics card displaying real Input, Output, Thinking, and Cache Read tokens.
 
 ---
 
-## 3. Strict E2E Test Suite (Playwright)
+## 4. On-Demand File Viewer & Attachment Chips
 
-Per user instructions, **Claude Code is ignored** and tests run **strictly in Antigravity (`agy`)** with model `gemini-3.8-flash` and effort `low`.
+- **Real HTTP Streaming**: Uses `fs_raw_url_request` to obtain authenticated tickets (`/files/raw?path=...&token=...`) for zero-bloat file inspection.
+- **Preview / Raw Toggle**: Markdown files support live tab toggle between formatted preview and raw text.
+- **Light & Dark Theme**: All sheet surfaces use `colors.elevated`, `colors.border`, `colors.ink`, `colors.canvas`.
+
+---
+
+## 5. Strict E2E Test Suite (Playwright)
+
+Executed strictly in **Antigravity (`agy`)** with model `gemini-3.8-flash` and effort `low`.
 
 ### Test 1: Antigravity Thinking Stream & Auto-Collapse
-- **Configuration**:
-  - Agent: `antigravity`
-  - Model: `gemini-3.8-flash`
-  - Reasoning effort: `low` (`--effort=low`)
-- **Prompt**: Mathematical riddle or step-by-step reasoning prompt (e.g. `"A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Show your thought process."`).
-- **Assertions**:
-  1. UI displays the thinking stream container.
-  2. Thinking container starts small (1 line) and dynamically grows up to 7 lines as thought deltas stream in.
-  3. Rolling window correctly maintains a maximum of 7 visible lines, dropping the oldest lines smoothly.
-  4. Thought lines have syntax highlighting applied.
-  5. The moment the agent begins streaming the answer, the thinking box **auto-collapses** to `Thought for Xs [▾]`.
-  6. The final answer text is displayed full-width on the canvas.
-  7. Clicking the collapsed thinking bar re-expands it, allowing the user to view the full thought history.
+1. Spawns `agy` reasoning turn.
+2. Asserts thinking container starts at 1 line and grows dynamically to 7 lines.
+3. Asserts rolling window maintains 7 visible lines.
+4. Asserts thought syntax highlighting is applied.
+5. Asserts thinking container auto-collapses to `Thought for Xs [▾]` when the answer begins streaming.
+6. Asserts expanding the collapsed header shows the complete scrollable thought trace.
 
 ### Test 2: Slash Command Search & Terminal Sync (`/usage` and `/model`)
-- **Assertions**:
-  1. Tap the **`/`** button next to **`+`** in the composer.
-  2. The Slash Commands Overlay opens smoothly.
-  3. Preloaded commands are visible (`/model`, `/usage`, `/cost`, `/compact`, `/clear`, `/doctor`).
-  4. Type `"model"` in the search bar:
-     - Verified: Instant zero-lag filtering shows `/model`.
-     - Clicking `/model` opens the model picker showing `Gemini 3.8 Flash (Low)`.
-     - Selecting updates the session model badge.
-  5. Type `"usage"` in the search bar:
-     - Verified: Instant zero-lag filtering shows `/usage`.
-     - Clicking `/usage` displays the token usage metrics card (Input, Output, Thinking tokens).
+1. Taps `/` button in composer.
+2. Verifies preloaded commands render immediately.
+3. Searches `"model"`, clicks `/model`, confirms real models from `agy models` appear, and selects one.
+4. Searches `"usage"`, clicks `/usage`, confirms live token breakdown card renders with real numbers.
 
 ---
 
-## 4. Work Breakdown & Execution Order
+## 6. Work Breakdown & Parallel Execution Strategy
 
-1. **Step 1: Backend `agentProcess.ts` & `server.ts`**
-   - Configure `resolveAgentCommand` for `antigravity` to use `--model=gemini-3.8-flash` and `--effort=low`.
-   - Ensure `parseAntigravityLine` separates thoughts from answer deltas.
-   - Add `command_search` bridge event handler for `/model` and `/usage`.
-2. **Step 2: Frontend Components**
-   - Update `ThinkingAccordion.tsx` with dynamic height expansion (1 → 7 lines) and rolling window animation.
-   - Add `highlightThought` utility for thought syntax coloring.
-   - Update `Composer.tsx` with the `/` button next to `+`.
-   - Build `SlashCommandOverlay.tsx` with debounced terminal sync and sub-views for `/model` and `/usage`.
-3. **Step 3: Playwright E2E Test Suite**
-   - Write `e2e/antigravity-thinking-slash.spec.ts` matching the exact user test scenarios.
-   - Execute and verify passing results.
+| Track | Task | Files | Dependencies |
+| :--- | :--- | :--- | :--- |
+| **Track A (Backend)** | Real Model Discovery, Usage Accumulator, & Command Sync Handler | `backend/src/agentProcess.ts`<br>`backend/src/sessionRegistry.ts`<br>`backend/src/server.ts`<br>`src/types/index.ts` | None |
+| **Track B (Frontend UI)** | Dynamic Thinking Stream (1-7 lines) + Syntax Highlighting | `src/components/ThinkingAccordion.tsx`<br>`src/utils/thoughtHighlight.ts`<br>`src/theme/colors.ts` | Track A types |
+| **Track C (Frontend UI)** | Slash Command Overlay (`/model`, `/usage`) + Composer `/` Button | `src/components/Composer.tsx`<br>`src/components/SlashCommandOverlay.tsx`<br>`src/screens/TranscriptScreen.tsx` | Track A types |
+| **Track D (E2E Tests)** | Playwright E2E Suite for Thinking Stream & Slash Sync | `e2e/antigravity-thinking-slash.spec.ts` | Tracks A, B, C |
+
+**Estimated Time to Complete (ETA)**: ~25 - 30 minutes with parallel track execution.

@@ -5,6 +5,7 @@ import { Check, Copy } from 'lucide-react-native';
 
 import { useTheme } from '../../theme';
 import { Icon, iconSizes } from '../../theme/icons';
+import { monoFontFallback, monoFontFamily, useMonoFont } from '../../components/monoFont';
 import { CollapsiblePanel } from './SetupUI';
 import { PAIRING_SETUP_COMMAND } from './types';
 
@@ -12,6 +13,7 @@ import { PAIRING_SETUP_COMMAND } from './types';
 export default function PairingTokenPanel({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
   const { colors, spacing, radius, typeScale, maxFontScale, minTouchTarget } = useTheme();
   const [copied, setCopied] = useState(false);
+  const monoLoaded = useMonoFont();
 
   useEffect(() => {
     if (!copied) return;
@@ -37,7 +39,10 @@ export default function PairingTokenPanel({ expanded, onToggle }: { expanded: bo
       >
         <Text
           maxFontSizeMultiplier={maxFontScale}
-          style={[typeScale.body, { color: colors.ink, fontFamily: 'monospace', flex: 1 }]}
+          style={[
+            typeScale.body,
+            { color: colors.ink, fontFamily: monoLoaded ? monoFontFamily.regular : monoFontFallback, flex: 1 },
+          ]}
         >
           {PAIRING_SETUP_COMMAND}
         </Text>

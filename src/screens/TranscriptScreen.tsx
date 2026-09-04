@@ -4,7 +4,6 @@ import {
   KeyboardAvoidingView,
   NativeScrollEvent,
   NativeSyntheticEvent,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -15,7 +14,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
-import { ChevronLeft, FolderOpen, Rocket, SquareTerminal } from 'lucide-react-native';
+import {
+  ChevronLeft,
+  FlaskConical,
+  FolderOpen,
+  GitCommitHorizontal,
+  ListTodo,
+  Rocket,
+  Search,
+  SquareTerminal,
+  type LucideIcon,
+} from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
 import { useFadeSlideIn } from '../theme/motion';
@@ -31,6 +40,8 @@ import { FileAttachmentChip } from '../components/FileAttachmentChip';
 import { FileViewerSheet, type ViewableFile } from '../components/FileViewerSheet';
 import { Composer, type ComposerAttachment } from '../components/Composer';
 import { TypingIndicator } from '../components/TypingIndicator';
+import { ThinkingAccordion } from '../components/ThinkingAccordion';
+import { SlashCommandOverlay } from '../components/SlashCommandOverlay';
 
 type Nav = NativeStackNavigationProp<SessionsStackParamList, 'Transcript'>;
 type TranscriptRoute = RouteProp<SessionsStackParamList, 'Transcript'>;
@@ -59,11 +70,16 @@ function attachmentToViewable(attachment: FileAttachment): ViewableFile {
 
 let nextMessageId = Date.now();
 
-const STARTER_PROMPTS = [
-  '🔎 Explain this project',
-  '📜 Summarize recent git commits',
-  '🧪 Run test suite',
-  '🛠️ What tasks are open?',
+interface StarterPrompt {
+  icon: LucideIcon;
+  label: string;
+}
+
+const STARTER_PROMPTS: StarterPrompt[] = [
+  { icon: Search, label: 'Explain this project' },
+  { icon: GitCommitHorizontal, label: 'Summarize recent git commits' },
+  { icon: FlaskConical, label: 'Run test suite' },
+  { icon: ListTodo, label: 'What tasks are open?' },
 ];
 
 interface TranscriptRowProps {
@@ -104,7 +120,7 @@ function TranscriptRow({ item, onOpenAttachment }: TranscriptRowProps) {
 
   const status = item.status ?? 'done';
   return (
-    <Animated.View style={[styles.agentTurn, { paddingHorizontal: spacing.md, marginBottom: spacing.lg }, animatedStyle]}>
+    <Animated.View testID="agent-turn-bubble" style={[styles.agentTurn, { paddingHorizontal: spacing.md, marginBottom: spacing.lg }, animatedStyle]}>
       <View style={[styles.turnHeader, { marginBottom: spacing.xs }]}>
         <Text style={[typeScale.subheading, { color: colors.ink }]} maxFontSizeMultiplier={1.3}>
           Agent
@@ -114,15 +130,22 @@ function TranscriptRow({ item, onOpenAttachment }: TranscriptRowProps) {
           {relativeTime(item.timestamp)}
         </Text>
       </View>
+      {item.thinking ? (
+        <ThinkingAccordion
+          thinking={item.thinking}
+          isStreaming={status === 'streaming'}
+          hasAnswerContent={Boolean(item.content && item.content.trim().length > 0)}
+        />
+      ) : null}
       {status === 'error' ? (
         <Text style={[typeScale.body, { color: colors.destructive }]} maxFontSizeMultiplier={1.3}>
           {item.content}
         </Text>
-      ) : status === 'streaming' && item.content.trim() === '' ? (
+      ) : status === 'streaming' && item.content.trim() === '' && !item.thinking ? (
         <TypingIndicator />
-      ) : (
+      ) : item.content.trim() !== '' ? (
         <MarkdownBody content={item.content} />
-      )}
+      ) : null}
       {item.attachments && item.attachments.length > 0 ? (
         <View style={[styles.attachmentsWrap, { gap: spacing.xxs, marginTop: spacing.sm }]}>
           {item.attachments.map((attachment) => (
@@ -145,6 +168,8 @@ export default function TranscriptScreen() {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
+  const [slashOverlayVisible, setSlashOverlayVisible] = useState(false);
+  const [sessionModelBadge, setSessionModelBadge] = useState('Gemini 3.8 Flash (Low)');
   const { client } = useBridge();
   // Track B placeholder-swap fix (REAL_AGENT_CONNECTION_PLAN.md §3a.1): the
   // optimistic local `agentReply` bubble appended in `handleSend` has a
@@ -378,10 +403,10 @@ export default function TranscriptScreen() {
         <View style={[styles.chipsContainer, { gap: spacing.sm }]}>
           {STARTER_PROMPTS.map((prompt) => (
             <Pressable
-              key={prompt}
-              onPress={() => handleSend(prompt, [])}
+              key={prompt.label}
+              onPress={() => handleSend(prompt.label, [])}
               accessibilityRole="button"
-              accessibilityLabel={prompt}
+              accessibilityLabel={prompt.label}
               style={[
                 styles.promptChip,
                 {
@@ -394,8 +419,9 @@ export default function TranscriptScreen() {
                 },
               ]}
             >
+              <Icon icon={prompt.icon} size={16} color={colors.inkSecondary} />
               <Text style={[typeScale.bodyMedium, { color: colors.ink }]} maxFontSizeMultiplier={1.3}>
-                {prompt}
+                {prompt.label}
               </Text>
             </Pressable>
           ))}
@@ -407,13 +433,12 @@ export default function TranscriptScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.canvas }]}
-      // Android's AndroidManifest.xml sets windowSoftInputMode="adjustResize",
-      // so the OS already shrinks the window when the keyboard opens —
-      // stacking KeyboardAvoidingView's own "padding" behavior on top of that
-      // double-compensates and pushes the composer (and its Send button)
-      // below the visible viewport. iOS has no such manifest-level resize,
-      // so it still needs "padding" here.
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      // edgeToEdgeEnabled=true (Android) breaks windowSoftInputMode="adjustResize" —
+      // the OS no longer reliably shrinks the window when the keyboard opens, so
+      // KeyboardAvoidingView's own "padding" behavior is needed unconditionally on
+      // both platforms (see pig-keyboard-handling; matches SetupScreen,
+      // NewSessionSheet, RenameSessionSheet).
+      behavior="padding"
     >
       <View
         style={[
@@ -429,9 +454,25 @@ export default function TranscriptScreen() {
         >
           <Icon icon={ChevronLeft} size={24} color={colors.ink} />
         </Pressable>
-        <Text style={[typeScale.heading, { color: colors.ink, flex: 1 }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
-          {session?.name ?? 'PiG app build'}
-        </Text>
+        <View style={styles.headerTitleGroup}>
+          <Text style={[typeScale.heading, { color: colors.ink }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
+            {session?.name ?? 'PiG app build'}
+          </Text>
+          <Pressable
+            testID="session-model-badge"
+            onPress={() => setSlashOverlayVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Choose model"
+            style={[
+              styles.modelBadge,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <Text style={[typeScale.caption, { color: colors.inkSecondary, fontSize: 11, fontWeight: '500' }]}>
+              {sessionModelBadge}
+            </Text>
+          </Pressable>
+        </View>
         <Pressable
           onPress={() => navigation.navigate('FileExplorer')}
           accessibilityRole="button"
@@ -455,9 +496,27 @@ export default function TranscriptScreen() {
         onContentSizeChange={handleContentSizeChange}
       />
 
-      <Composer sessionId={sessionId} onSend={handleSend} />
+      <Composer
+        sessionId={sessionId}
+        onSend={handleSend}
+        onOpenSlash={() => setSlashOverlayVisible(true)}
+      />
 
       <FileViewerSheet file={viewerFile} textContent={viewerContent} onClose={closeViewer} />
+
+      <SlashCommandOverlay
+        visible={slashOverlayVisible}
+        onClose={() => setSlashOverlayVisible(false)}
+        sessionId={sessionId}
+        onSelectModel={(m) => setSessionModelBadge(m.name)}
+        onSelectCommand={(cmd) => {
+          if (cmd.name === '/clear') {
+            setMessages([]);
+          } else if (cmd.name === '/compact') {
+            setMessages((prev) => prev.slice(-2));
+          }
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -470,6 +529,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  headerTitleGroup: {
+    flex: 1,
+    flexDirection: 'column',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  modelBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 9999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   folderButton: {
     alignItems: 'center',
@@ -538,6 +610,9 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   promptChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     borderWidth: StyleSheet.hairlineWidth,
     justifyContent: 'center',
   },

@@ -36,6 +36,8 @@ export interface ThemeColors {
 
   /** Primary brand accent — Velvet Orchid (light) / Velvet Orchid Dark (dark). */
   accent: string;
+  /** Low-emphasis accent-tinted fill (selected rows, highlighted pills) — replaces the `accent + 'NN'` alpha-string hack. */
+  accentTint: string;
 
   /** Success / connected — fill & dot only, never text. */
   success: string;
@@ -96,6 +98,7 @@ export const lightColors: ThemeColors = {
   onAccent: base.snow,
 
   accent: base.velvetOrchid,
+  accentTint: '#f2e3f3',
 
   success: base.mutedTeal,
   warning: base.amberOchreDeep,
@@ -119,6 +122,7 @@ export const darkColors: ThemeColors = {
   onAccent: base.onyx,
 
   accent: base.velvetOrchidDark,
+  accentTint: '#3a2a3c',
 
   success: base.mutedTeal,
   warning: base.amberOchre,

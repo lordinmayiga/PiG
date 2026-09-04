@@ -17,11 +17,11 @@ Shown when a new session is launched and has 0 messages.
    - Agent title and status dot + text label (`● Ready` using `colors.idleDot` and `typeScale.label`). Status is always dot + text together, never color alone.
    - Working folder path on the VPS (`folder` property of the session, rendered with `colors.inkSecondary`).
 2. **Starter Prompt Chips (Quick Actions)**:
-   - Provide 3 to 4 actionable starter prompt chips above the composer:
-     - `🔎 Explain this project`
-     - `📜 Summarize recent git commits`
-     - `🧪 Run test suite`
-     - `🛠️ What tasks are open?`
+   - Provide 3 to 4 actionable starter prompt chips above the composer, each a Lucide icon (`pig-icons-branding`: 16px, 2px stroke, `colors.inkSecondary`) beside plain text — **never an emoji**, per `pig-icons-branding`'s and `pig-microcopy`'s no-emoji rules (this row previously specified emoji leads; that was a bug in this skill, fixed 2026-09-04, not a sanctioned exception):
+     - `Search` icon — "Explain this project"
+     - `GitCommitHorizontal` icon — "Summarize recent git commits"
+     - `FlaskConical` icon — "Run test suite"
+     - `ListTodo` icon — "What tasks are open?"
    - Tapping a chip immediately populates or sends the prompt through the composer.
 3. **Microcopy**:
    - *"Ready to work. Tap a starter prompt above or message the agent below."*
@@ -69,5 +69,14 @@ Shown when no web tabs are currently open.
 ## Design System Constraints
 
 - **Color**: Adhere strictly to `pig-color-system` — use semantic tokens (`colors.canvas`, `colors.card`, `colors.inkSecondary`, `colors.accent`).
-- **Typography & Touch Targets**: All interactive chips and buttons must observe `minTouchTarget` (44px) and `maxFontScale`.
-- **Microcopy**: Active voice, concise, no apologies.
+- **Typography & Touch Targets**: All interactive chips and buttons must observe `minTouchTarget` — **48dp**, matching `pig-layout-spacing`'s floor (this file previously said 44px; that was this skill under-stating the real floor, fixed 2026-09-04) — and `maxFontScale` (1.3×, per `pig-typography`).
+- **Microcopy**: Active voice, concise, no apologies, per `pig-microcopy`.
+- **Icons**: Lucide only (`pig-icons-branding`), never emoji, on every chip/icon above.
+
+## Cross-skill guardrails
+
+**Non-negotiable.** Every `pig-*` skill's rules are mandatory, not advisory. Violating one — for a deadline, because a screen "looks better" without it, as a "temporary" exception, because the violation is small — is never acceptable. Do not ship code, a mockup, or a skill edit that contradicts any `pig-*` skill. If two skills genuinely conflict, stop and raise it before writing code either way — silently picking one skill over another is exactly the failure mode this rule exists to prevent.
+
+- Every empty state here must also satisfy the other `pig-*` skills — never trade a rule off against another to make one screen work; a perceived conflict is a bug in the skills to raise, not a license to violate either.
+- **No emojis anywhere in the app**, full stop — this file is not an exception, and the starter-chip glyphs above are Lucide icons for exactly that reason.
+- **Icons are always `lucide-react-native`** via the shared `Icon` component.

@@ -48,13 +48,30 @@ import type {
   FileAttachment,
   SetOpenRouterKeyPayload,
   GetOpenRouterKeyPayload,
+  CommandSearchPayload,
+  CommandSearchResultPayload,
+  SetSessionModelPayload,
+  SetSessionModelAckPayload,
+  GetSessionUsagePayload,
+  GetSessionUsageAckPayload,
+  SlashCommandItem,
+  ModelInfo,
 } from '../../src/types/index.js';
 import { listTmuxSessions } from './tmux.js';
 import { isValidBridgeToken, verifyAndConsumePairingToken } from './auth.js';
 import { routeInput } from './routeInput.js';
 import { confirmAction } from './actions.js';
-import { spawnAgentInTmuxWindow } from './agentProcess.js';
-import { getOrCreateSession, appendTurn, getTranscript, setActiveHandle } from './sessionRegistry.js';
+import { spawnAgentInTmuxWindow, getAvailableAgyModels } from './agentProcess.js';
+import {
+  getOrCreateSession,
+  appendTurn,
+  getTranscript,
+  setActiveHandle,
+  getSessionModel,
+  setSessionModel,
+  getSessionUsage,
+  accumulateUsage,
+} from './sessionRegistry.js';
 import { listDirectory, readFileContent, MIME_TYPES } from './files.js';
 import { handleHttpFileRequest, mintRawFileTicket } from './httpFiles.js';
 import { saveOpenRouterKey, getOpenRouterKeySettings } from './openrouterConfig.js';
@@ -159,7 +176,8 @@ async function spawnAndStreamTurn(sessionId: string, prompt: string): Promise<vo
   }
 
   const ctx = getOrCreateSession(sessionId, tmuxSession.folder, tmuxSession.agent);
-  console.log(`[pig-bridge] >>> Spawning agent (${ctx.agent}) in "${ctx.cwd}" for prompt: "${prompt}"`);
+  const sessionModel = getSessionModel(sessionId);
+  console.log(`[pig-bridge] >>> Spawning agent (${ctx.agent}) with model ${sessionModel.model} (${sessionModel.effort}) in "${ctx.cwd}" for prompt: "${prompt}"`);
 
   const userMessage: TranscriptMessage = {
     id: randomUUID(),
@@ -175,8 +193,13 @@ async function spawnAndStreamTurn(sessionId: string, prompt: string): Promise<vo
     cwd: ctx.cwd,
     agent: ctx.agent,
     prompt,
+    model: sessionModel.model,
+    effort: sessionModel.effort,
     onChunk: (chunk) => {
       console.log(`[pig-bridge] <<< Agent chunk for session "${sessionId}" [done: ${chunk.done}]: "${chunk.message.content.slice(-40)}"`);
+      if (chunk.message.usage) {
+        accumulateUsage(sessionId, chunk.message.usage);
+      }
       if (chunk.done) {
         try {
           const candidateDirs = [
@@ -295,6 +318,71 @@ async function handleFsRawUrlRequest(ws: WebSocket, envelope: Envelope<FsRawUrlP
   }
 }
 
+async function handleCommandSearch(ws: WebSocket, envelope: Envelope<CommandSearchPayload>): Promise<void> {
+  const { query, sessionId } = envelope.payload;
+  const sId = sessionId ?? envelope.sessionId ?? '';
+  const currentModel = sId ? getSessionModel(sId) : { model: 'gemini-3.8-flash', effort: 'low' };
+  const currentUsage = sId ? getSessionUsage(sId) : {
+    inputTokens: 0,
+    outputTokens: 0,
+    thinkingTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 0,
+  };
+
+  const cost = (currentUsage.totalTokens * 0.000002).toFixed(4);
+
+  const allCommands: SlashCommandItem[] = [
+    { name: '/model', description: 'Choose active AI model & reasoning', badge: currentModel.model },
+    { name: '/usage', description: 'Session token counts & context breakdown', badge: `${currentUsage.totalTokens.toLocaleString()} tokens` },
+    { name: '/cost', description: 'View estimated session cost', badge: `$${cost}` },
+    { name: '/compact', description: 'Truncate older context to save tokens' },
+    { name: '/clear', description: 'Reset conversation history' },
+    { name: '/doctor', description: 'Run bridge and tmux diagnostics' },
+  ];
+
+  const q = (query || '').toLowerCase().trim();
+  const filteredCommands = allCommands.filter(
+    (c) => c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
+  );
+
+  let models: ModelInfo[] | undefined;
+  if (!q || q.includes('model')) {
+    models = await getAvailableAgyModels();
+  }
+
+  const result: CommandSearchResultPayload = {
+    query,
+    commands: filteredCommands,
+    models,
+    usage: currentUsage,
+  };
+
+  send(ws, 'command_search_result', result, envelope.sessionId, envelope.id);
+}
+
+async function handleSetSessionModel(ws: WebSocket, envelope: Envelope<SetSessionModelPayload>): Promise<void> {
+  const { sessionId, model, effort } = envelope.payload;
+  setSessionModel(sessionId, model, effort);
+  const result: SetSessionModelAckPayload = {
+    ok: true,
+    sessionId,
+    model,
+    effort,
+  };
+  send(ws, 'set_session_model_ack', result, envelope.sessionId, envelope.id);
+}
+
+async function handleGetSessionUsage(ws: WebSocket, envelope: Envelope<GetSessionUsagePayload>): Promise<void> {
+  const { sessionId } = envelope.payload;
+  const usage = getSessionUsage(sessionId);
+  const result: GetSessionUsageAckPayload = {
+    sessionId,
+    usage,
+  };
+  send(ws, 'get_session_usage_ack', result, envelope.sessionId, envelope.id);
+}
+
 async function routeEnvelope(ws: WebSocket, envelope: Envelope): Promise<void> {
   if (envelope.type !== 'hello' && !authedSockets.has(ws)) {
     sendError(ws, 'bad_token', 'Send hello first.', envelope.id);
@@ -321,6 +409,12 @@ async function routeEnvelope(ws: WebSocket, envelope: Envelope): Promise<void> {
       return handleSetOpenRouterKey(ws, envelope as Envelope<SetOpenRouterKeyPayload>);
     case 'get_openrouter_key':
       return handleGetOpenRouterKey(ws, envelope as Envelope<GetOpenRouterKeyPayload>);
+    case 'command_search':
+      return handleCommandSearch(ws, envelope as Envelope<CommandSearchPayload>);
+    case 'set_session_model':
+      return handleSetSessionModel(ws, envelope as Envelope<SetSessionModelPayload>);
+    case 'get_session_usage':
+      return handleGetSessionUsage(ws, envelope as Envelope<GetSessionUsagePayload>);
     default:
       sendError(ws, 'internal', `Unhandled envelope type: ${envelope.type}`, envelope.id);
   }

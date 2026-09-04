@@ -62,53 +62,75 @@
  */
 
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentKind,
   TranscriptChunkPayload,
   TranscriptMessage,
+  TokenUsage,
+  ModelInfo,
 } from '../../src/types/index.js';
 
 const execFileAsync = promisify(execFile);
 
+let cachedModels: { models: ModelInfo[]; expiresAt: number } | null = null;
+
+export async function getAvailableAgyModels(): Promise<ModelInfo[]> {
+  const now = Date.now();
+  if (cachedModels && cachedModels.expiresAt > now) {
+    return cachedModels.models;
+  }
+  try {
+    const { stdout } = await execFileAsync('agy', ['models'], {
+      env: {
+        ...process.env,
+        PATH: `/root/.local/bin:/usr/local/bin:${process.env.PATH || ''}`,
+      },
+    });
+    const lines = stdout.split('\n').filter((l) => l.trim().length > 0 && !l.includes('Fetching available models'));
+    const models: ModelInfo[] = [];
+    for (const line of lines) {
+      const parts = line.trim().split(/\s{2,}/);
+      if (parts.length >= 2) {
+        const id = parts[0].trim();
+        const name = parts[1].trim();
+        const badge = name.includes('(High)') ? 'High' : name.includes('(Medium)') ? 'Medium' : name.includes('(Low)') ? 'Low' : name.includes('Thinking') ? 'Thinking' : undefined;
+        models.push({
+          id,
+          name,
+          badge,
+          description: `Reasoning agent model ${id}`,
+        });
+      }
+    }
+    if (models.length > 0) {
+      cachedModels = { models, expiresAt: now + 60_000 };
+      return models;
+    }
+  } catch (err) {
+    console.error('[agentProcess] Error running agy models:', err);
+  }
+  return [
+    { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)', badge: 'Low' },
+    { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)', badge: 'Medium' },
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', badge: 'High' },
+    { id: 'gemini-3.7-flash-low', name: 'Gemini 3.7 Flash (Low)', badge: 'Low' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Thinking)', badge: 'Thinking' },
+  ];
+}
+
 /**
  * Resolve the CLI binary + args used to start an agent in
  * stream-json/interactive mode, per agent kind.
- *
- * `claude-code`'s flags are verified live on this VPS (2026-09-02):
- * `--print` is required for `--output-format stream-json` to apply at all,
- * and the CLI itself refuses to start with `--output-format=stream-json`
- * unless `--verbose` is also set ("Error: When using --print,
- * --output-format=stream-json requires --verbose"). `--include-partial-
- * messages` is what actually gives token-level streaming `content_block_delta`
- * events instead of one lump `assistant` message per turn — without it the
- * app's composer would feel like it's waiting for the whole reply, not
- * streaming it.
- *
- * Note `--print` runs a *single* prompt-and-exit turn, not an interactive
- * session — per-turn input isn't "typed into" this process's stdin the way
- * an interactive REPL would take it; each submitted prompt needs its own
- * spawn (or `--resume`/`--continue` with the prior session id to keep
- * conversation context — not wired yet, follow-up once per-turn submission
- * is implemented).
- *
- * `antigravity` (`agy`)'s flags verified live on this VPS (2026-09-03, `agy
- * --help` + a real `--output-format stream-json` smoke test): `agy` uses Go
- * `flag`-style parsing, where a flag that takes a value does NOT treat the
- * next argv entry as its value the way `claude`'s `--print` does — `agy
- * --print "text" --output-format stream-json` actually errors ("--print
- * took \"--output-format\" as its prompt"). The value must be attached with
- * `=`: `--print=<prompt>`. `-p`/`--prompt` are documented aliases for
- * `--print`; `--print=<prompt>` is used here since that's the flag actually
- * verified working. Unlike `claude`, no separate "include partial
- * messages" flag exists or is needed — `--output-format stream-json` alone
- * already streams token-level `text_delta`s (see `parseAntigravityLine`'s
- * doc for the verified event shape, which is structurally unrelated to
- * claude's).
  */
-function resolveAgentCommand(agent: AgentKind, prompt: string): { bin: string; args: string[] } {
+function resolveAgentCommand(
+  agent: AgentKind,
+  prompt: string,
+  model?: string,
+  effort?: string,
+): { bin: string; args: string[] } {
   switch (agent) {
     case 'claude-code': {
       const bin = existsSync('/usr/bin/claude')
@@ -129,7 +151,19 @@ function resolveAgentCommand(agent: AgentKind, prompt: string): { bin: string; a
           : existsSync('/usr/bin/agy')
             ? '/usr/bin/agy'
             : 'agy';
-      return { bin, args: ['--output-format', 'stream-json', '--dangerously-skip-permissions', `--print=${prompt}`] };
+      const selectedModel = model ?? 'gemini-3.8-flash';
+      const selectedEffort = effort ?? 'low';
+      return {
+        bin,
+        args: [
+          '--output-format',
+          'stream-json',
+          '--dangerously-skip-permissions',
+          `--model=${selectedModel}`,
+          `--effort=${selectedEffort}`,
+          `--print=${prompt}`,
+        ],
+      };
     }
   }
 }
@@ -139,10 +173,10 @@ export interface SpawnAgentOptions {
   windowName: string;
   cwd: string;
   agent: AgentKind;
-  /** The turn's prompt text. `claude --print` (see `resolveAgentCommand`'s
-   * doc) runs one prompt-and-exit turn per process, so this is required at
-   * spawn time rather than sent later over stdin. */
+  /** The turn's prompt text. */
   prompt: string;
+  model?: string;
+  effort?: string;
   onChunk: (chunk: TranscriptChunkPayload) => void;
   onExit?: (code: number | null) => void;
 }
@@ -158,8 +192,8 @@ export interface SpawnedAgentHandle {
  * module doc for why both exist and which one owns the data.
  */
 export function spawnAgentInTmuxWindow(opts: SpawnAgentOptions): SpawnedAgentHandle {
-  const { sessionName, windowName, cwd, agent, prompt, onChunk, onExit } = opts;
-  const { bin, args } = resolveAgentCommand(agent, prompt);
+  const { sessionName, windowName, cwd, agent, prompt, model, effort, onChunk, onExit } = opts;
+  const { bin, args } = resolveAgentCommand(agent, prompt, model, effort);
 
   // --- 1. The real, piped subprocess. This is the transcript source of truth. ---
   const child: ChildProcessWithoutNullStreams = spawn(bin, args, {
@@ -317,6 +351,9 @@ export interface TurnParseState {
    * `assistant`/`result` events carry the full text already, so they
    * overwrite it (safe/idempotent — see module doc). */
   accumulatedText: string;
+  accumulatedThinking: string;
+  isThinking: boolean;
+  conversationId?: string;
 }
 
 /**
@@ -463,17 +500,117 @@ export function parseNdjsonLine(
  *   same reasoning as claude's `result` event).
  * - Anything else (unrecognized `event` value) — metadata, ignored.
  */
+function tryExtractTranscriptThinking(state: TurnParseState): void {
+  if (!state.conversationId || (state.accumulatedThinking && state.accumulatedThinking.trim().length > 0)) {
+    return;
+  }
+  try {
+    const transcriptPath = `/root/.gemini/antigravity-cli/brain/${state.conversationId}/.system_generated/logs/transcript.jsonl`;
+    if (existsSync(transcriptPath)) {
+      const content = readFileSync(transcriptPath, 'utf8');
+      const lines = content.trim().split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const l = lines[i];
+        if (!l) continue;
+        const step = JSON.parse(l);
+        if (step.thinking && typeof step.thinking === 'string' && step.thinking.trim().length > 0) {
+          state.accumulatedThinking = step.thinking.trim();
+          break;
+        }
+        if (step.content && typeof step.content === 'string' && step.content.includes('<thought>')) {
+          const m = step.content.match(/<thought>([\s\S]*?)<\/thought>/);
+          if (m) {
+            state.accumulatedThinking = m[1].trim();
+            break;
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-fatal fallback
+  }
+}
+
 function parseAntigravityLine(
   obj: Record<string, unknown>,
   sessionId: string,
   state: TurnParseState,
 ): TranscriptChunkPayload | null {
+  if (typeof obj.conversation_id === 'string') {
+    state.conversationId = obj.conversation_id;
+  } else if (obj.init && typeof (obj.init as Record<string, unknown>).conversation_id === 'string') {
+    state.conversationId = (obj.init as Record<string, unknown>).conversation_id as string;
+  }
+
   switch (obj.event) {
     case 'step_update': {
       const stepUpdate = obj.step_update as Record<string, unknown> | undefined;
+      if (typeof stepUpdate?.conversation_id === 'string') {
+        state.conversationId = stepUpdate.conversation_id;
+      }
       const textDelta = stepUpdate?.text_delta;
+      const thoughtDelta = stepUpdate?.thought_delta || (stepUpdate?.step_type === 'thought' ? textDelta : undefined);
+      const usageRaw = (stepUpdate?.usage || obj.usage) as Record<string, number> | undefined;
+
+      let usage: TokenUsage | undefined;
+      if (usageRaw && typeof usageRaw === 'object') {
+        usage = {
+          inputTokens: usageRaw.input_tokens ?? 0,
+          outputTokens: usageRaw.output_tokens ?? 0,
+          thinkingTokens: usageRaw.thinking_tokens ?? 0,
+          cacheReadTokens: usageRaw.cache_read_tokens ?? 0,
+          totalTokens: usageRaw.total_tokens ?? 0,
+        };
+      }
+
+      if (typeof thoughtDelta === 'string' && thoughtDelta.length > 0) {
+        state.accumulatedThinking += thoughtDelta;
+        return {
+          sessionId,
+          done: false,
+          message: {
+            id: state.id,
+            role: 'agent',
+            timestamp: new Date().toISOString(),
+            content: state.accumulatedText,
+            thinking: state.accumulatedThinking,
+            status: 'streaming',
+            usage,
+          },
+        };
+      }
+
       if (typeof textDelta !== 'string' || textDelta.length === 0) return null;
-      state.accumulatedText += textDelta;
+
+      if (textDelta.includes('<thought>') || state.isThinking) {
+        let remaining = textDelta;
+        while (remaining.length > 0) {
+          if (!state.isThinking) {
+            const startIdx = remaining.indexOf('<thought>');
+            if (startIdx !== -1) {
+              state.accumulatedText += remaining.slice(0, startIdx);
+              remaining = remaining.slice(startIdx + '<thought>'.length);
+              state.isThinking = true;
+            } else {
+              state.accumulatedText += remaining;
+              remaining = '';
+            }
+          } else {
+            const endIdx = remaining.indexOf('</thought>');
+            if (endIdx !== -1) {
+              state.accumulatedThinking += remaining.slice(0, endIdx);
+              remaining = remaining.slice(endIdx + '</thought>'.length);
+              state.isThinking = false;
+            } else {
+              state.accumulatedThinking += remaining;
+              remaining = '';
+            }
+          }
+        }
+      } else {
+        state.accumulatedText += textDelta;
+      }
+
       return {
         sessionId,
         done: false,
@@ -482,7 +619,9 @@ function parseAntigravityLine(
           role: 'agent',
           timestamp: new Date().toISOString(),
           content: state.accumulatedText,
+          thinking: state.accumulatedThinking.length > 0 ? state.accumulatedThinking : undefined,
           status: 'streaming',
+          usage,
         },
       };
     }
@@ -492,14 +631,38 @@ function parseAntigravityLine(
       const success = result?.status === 'SUCCESS';
       const responseText = typeof result?.response === 'string' ? result.response : '';
       if (responseText.length > 0) {
-        state.accumulatedText = responseText;
+        if (responseText.includes('<thought>')) {
+          const thoughtMatch = responseText.match(/<thought>([\s\S]*?)<\/thought>/);
+          if (thoughtMatch) {
+            state.accumulatedThinking = thoughtMatch[1].trim();
+            state.accumulatedText = responseText.replace(/<thought>[\s\S]*?<\/thought>/g, '').trim();
+          } else {
+            state.accumulatedText = responseText;
+          }
+        } else {
+          state.accumulatedText = responseText;
+        }
+      }
+      tryExtractTranscriptThinking(state);
+      const usageRaw = (result?.usage || obj.usage) as Record<string, number> | undefined;
+      let usage: TokenUsage | undefined;
+      if (usageRaw && typeof usageRaw === 'object') {
+        usage = {
+          inputTokens: usageRaw.input_tokens ?? 0,
+          outputTokens: usageRaw.output_tokens ?? 0,
+          thinkingTokens: usageRaw.thinking_tokens ?? 0,
+          cacheReadTokens: usageRaw.cache_read_tokens ?? 0,
+          totalTokens: usageRaw.total_tokens ?? 0,
+        };
       }
       const message: TranscriptMessage = {
         id: state.id,
         role: 'agent',
         timestamp: new Date().toISOString(),
         content: state.accumulatedText,
+        thinking: state.accumulatedThinking.length > 0 ? state.accumulatedThinking : undefined,
         status: success ? 'done' : 'error',
+        usage,
       };
       return { sessionId, message, done: true };
     }
@@ -522,6 +685,11 @@ export function createTurnParser(
   sessionId: string,
   agent: AgentKind = 'claude-code',
 ): (line: string) => TranscriptChunkPayload | null {
-  const state: TurnParseState = { id: randomUUID(), accumulatedText: '' };
+  const state: TurnParseState = {
+    id: randomUUID(),
+    accumulatedText: '',
+    accumulatedThinking: '',
+    isThinking: false,
+  };
   return (line: string) => parseNdjsonLine(line, sessionId, state, agent);
 }

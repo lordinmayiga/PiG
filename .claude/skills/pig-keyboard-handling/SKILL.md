@@ -22,3 +22,13 @@ Related: `pig-layout-spacing`'s safe-area rules apply the same "read the real in
 Root cause was the `behavior={Platform.OS === 'ios' ? 'padding' : undefined}` pattern this file used to prescribe (see git history) — correct before `edgeToEdgeEnabled` was turned on, silently broken after. Every `KeyboardAvoidingView` in the app (`TranscriptScreen`, `SetupScreen`, `NewSessionSheet`, `RenameSessionSheet`) was passing `undefined` on Android, i.e. doing nothing, while `adjustResize` — the thing that pattern was trusting to do the work — had stopped resizing the window under edge-to-edge. Fixed by switching all four to unconditional `behavior="padding"`; see the rules above.
 
 The previously-listed gaps (`Composer.tsx` insets handling, `TranscriptScreen`'s `FlatList` missing `keyboardShouldPersistTaps`, the sheets missing `KeyboardAvoidingView`) were already fixed by the time of this pass — the rules above describe the current, correct state, not open gaps.
+
+**Recheck 2026-09-04**: `TranscriptScreen.tsx` currently has `behavior={Platform.OS === 'ios' ? 'padding' : undefined}` again, with a comment claiming `adjustResize` handles Android — that's exactly the reverted, pre-edge-to-edge pattern this file documents as broken above. Flagging here since it directly contradicts this skill's "unconditionally `behavior=\"padding\"`" rule; needs the same fix as the 2026-09-02 pass, not a new one.
+
+## Cross-skill guardrails
+
+**Non-negotiable.** Every `pig-*` skill's rules are mandatory, not advisory. Violating one — for a deadline, because a screen "looks better" without it, as a "temporary" exception, because the violation is small — is never acceptable. Do not ship code, a mockup, or a skill edit that contradicts any `pig-*` skill. If two skills genuinely conflict, stop and raise it before writing code either way — silently picking one skill over another is exactly the failure mode this rule exists to prevent.
+
+- Every keyboard-handling decision here must also satisfy the other `pig-*` skills — never trade this skill's rules off against another to make one screen work; a perceived conflict is a bug in the skills to raise, not a license to violate either.
+- **No emojis anywhere in the app**, including as placeholder/hint glyphs in an input.
+- **Icons are always `lucide-react-native`** for any icon inside or beside a text input (send, mic, clear).

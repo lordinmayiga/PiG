@@ -20,6 +20,9 @@ import type {
   SessionListUpdatePayload,
   SetOpenRouterKeyAckPayload,
   TranscriptChunkPayload,
+  CommandSearchResultPayload,
+  SetSessionModelAckPayload,
+  GetSessionUsageAckPayload,
 } from '../types';
 
 export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
@@ -213,6 +216,9 @@ export class BridgeClient {
   private readonly fsRawUrlResultEmitter = new Emitter<FsRawUrlResultPayload>();
   private readonly setOpenRouterKeyAckEmitter = new Emitter<SetOpenRouterKeyAckPayload>();
   private readonly getOpenRouterKeyAckEmitter = new Emitter<GetOpenRouterKeyAckPayload>();
+  private readonly commandSearchResultEmitter = new Emitter<CommandSearchResultPayload>();
+  private readonly setSessionModelAckEmitter = new Emitter<SetSessionModelAckPayload>();
+  private readonly getSessionUsageAckEmitter = new Emitter<GetSessionUsageAckPayload>();
 
   constructor(options: BridgeClientOptions) {
     this.transport = options.transport;
@@ -442,6 +448,93 @@ export class BridgeClient {
     });
   }
 
+  /** Searches terminal/slash commands over the bridge. */
+  async searchCommands(query: string, sessionId?: string): Promise<CommandSearchResultPayload> {
+    return new Promise((resolve) => {
+      const id = makeEnvelopeId();
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.commandSearchResultEmitter.on((result) => {
+        clearTimeout(timer);
+        unsub();
+        resolve(result);
+      });
+      timer = setTimeout(() => {
+        unsub();
+        resolve({ query, commands: [] });
+      }, 5000);
+      this.transport.send({
+        v: 1,
+        type: 'command_search',
+        id,
+        ts: Date.now(),
+        sessionId,
+        payload: { query, sessionId },
+      });
+    });
+  }
+
+  /** Sets the active model and reasoning effort for a session. */
+  async setSessionModel(sessionId: string, model: string, effort?: string): Promise<SetSessionModelAckPayload> {
+    return new Promise((resolve) => {
+      const id = makeEnvelopeId();
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.setSessionModelAckEmitter.on((result) => {
+        clearTimeout(timer);
+        unsub();
+        resolve(result);
+      });
+      timer = setTimeout(() => {
+        unsub();
+        resolve({ ok: true, sessionId, model, effort });
+      }, 5000);
+      this.transport.send({
+        v: 1,
+        type: 'set_session_model',
+        id,
+        ts: Date.now(),
+        sessionId,
+        payload: { sessionId, model, effort },
+      });
+    });
+  }
+
+  /** Gets token usage metrics for a session. */
+  async getSessionUsage(sessionId: string): Promise<GetSessionUsageAckPayload> {
+    return new Promise((resolve) => {
+      const id = makeEnvelopeId();
+      let timer: ReturnType<typeof setTimeout>;
+      const unsub = this.getSessionUsageAckEmitter.on((result) => {
+        clearTimeout(timer);
+        unsub();
+        resolve(result);
+      });
+      timer = setTimeout(() => {
+        unsub();
+        resolve({ sessionId, usage: { inputTokens: 0, outputTokens: 0, thinkingTokens: 0, cacheReadTokens: 0, totalTokens: 0 } });
+      }, 5000);
+      this.transport.send({
+        v: 1,
+        type: 'get_session_usage',
+        id,
+        ts: Date.now(),
+        sessionId,
+        payload: { sessionId },
+      });
+    });
+  }
+
+  onCommandSearchResult(listener: (payload: CommandSearchResultPayload) => void): () => void {
+    return this.commandSearchResultEmitter.on(listener);
+  }
+
+  onSetSessionModelAck(listener: (payload: SetSessionModelAckPayload) => void): () => void {
+    return this.setSessionModelAckEmitter.on(listener);
+  }
+
+  onGetSessionUsageAck(listener: (payload: GetSessionUsageAckPayload) => void): () => void {
+    return this.getSessionUsageAckEmitter.on(listener);
+  }
+
   onConnectionStatus(listener: (status: ConnectionStatus) => void): () => void {
     return this.connectionStatusEmitter.on(listener);
   }
@@ -611,6 +704,24 @@ export class BridgeClient {
       case 'get_openrouter_key_ack': {
         const payload = envelope.payload as GetOpenRouterKeyAckPayload;
         this.getOpenRouterKeyAckEmitter.emit(payload);
+        return;
+      }
+
+      case 'command_search_result': {
+        const payload = envelope.payload as CommandSearchResultPayload;
+        this.commandSearchResultEmitter.emit(payload);
+        return;
+      }
+
+      case 'set_session_model_ack': {
+        const payload = envelope.payload as SetSessionModelAckPayload;
+        this.setSessionModelAckEmitter.emit(payload);
+        return;
+      }
+
+      case 'get_session_usage_ack': {
+        const payload = envelope.payload as GetSessionUsageAckPayload;
+        this.getSessionUsageAckEmitter.emit(payload);
         return;
       }
 
