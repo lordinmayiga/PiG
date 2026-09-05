@@ -4,8 +4,10 @@
  * and the pig-color-system skill. Do not hand-roll new colors here — add
  * them to DESIGN.md first, validate contrast, then port the value.
  */
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useColorScheme } from 'react-native';
+
+import { loadThemePreference, saveThemePreference } from '../storage';
 
 export type ColorScheme = 'light' | 'dark';
 /** A user-selectable preference: 'system' follows the OS setting. */
@@ -34,6 +36,20 @@ export interface ThemeColors {
 
   /** Primary brand accent — Velvet Orchid (light) / Velvet Orchid Dark (dark). */
   accent: string;
+  /** Low-emphasis accent-tinted fill (selected rows, highlighted pills) — replaces the `accent + 'NN'` alpha-string hack. */
+  accentTint: string;
+  /** Press-feedback fill for interactive rows/buttons — one step up from `card`, direction inverts by mode. Never use `neutral[100..300]` directly for this. */
+  pressedFill: string;
+
+  /**
+   * PROPOSED — syntax-highlight string color (file-viewer code highlighting,
+   * see pig-color-system's "Syntax highlighting" section and
+   * pig-markdown-rendering). Not yet confirmed by design review. Keywords
+   * reuse `accent` and comments reuse `inkSecondary` directly (no dedicated
+   * token) rather than invent two more new hues; this is the one color the
+   * scheme needed that nothing existing already covered.
+   */
+  syntaxString: string;
 
   /** Success / connected — fill & dot only, never text. */
   success: string;
@@ -79,6 +95,9 @@ const base = {
   rosyCopperDark: '#da846c',
   amberOchreDeep: '#8b6118',
   amberOchre: '#d2962d',
+  /** PROPOSED — syntax-highlight string color, see `syntaxString` above. */
+  slateBlue: '#1a5a9e',
+  slateBlueDark: '#8ec2ee',
 } as const;
 
 export const lightColors: ThemeColors = {
@@ -94,6 +113,9 @@ export const lightColors: ThemeColors = {
   onAccent: base.snow,
 
   accent: base.velvetOrchid,
+  accentTint: '#f2e3f3',
+  pressedFill: neutral[100],
+  syntaxString: base.slateBlue,
 
   success: base.mutedTeal,
   warning: base.amberOchreDeep,
@@ -117,6 +139,9 @@ export const darkColors: ThemeColors = {
   onAccent: base.onyx,
 
   accent: base.velvetOrchidDark,
+  accentTint: '#3a2a3c',
+  pressedFill: '#372f2c',
+  syntaxString: base.slateBlueDark,
 
   success: base.mutedTeal,
   warning: base.amberOchre,
@@ -159,8 +184,23 @@ const ThemeModeContext = createContext<ThemeModeContextValue | null>(null);
  */
 export function ThemeModeProvider({ children }: { children: React.ReactNode }) {
   const systemScheme = useSystemColorScheme();
-  const [preference, setPreference] = useState<ThemePreference>('system');
+  const [preference, setPreferenceState] = useState<ThemePreference>('system');
   const scheme = preference === 'system' ? systemScheme : preference;
+
+  // Load the persisted choice once on mount. If nothing was ever saved (or
+  // the read fails), stay on the 'system' default — no loading gate needed
+  // here since a brief moment on the system scheme before this resolves
+  // isn't the jarring kind of flash (unlike RootNavigator's Setup/Tabs gate).
+  useEffect(() => {
+    loadThemePreference().then((stored) => {
+      if (stored) setPreferenceState(stored);
+    });
+  }, []);
+
+  const setPreference = (next: ThemePreference) => {
+    setPreferenceState(next);
+    saveThemePreference(next);
+  };
 
   const value = useMemo(
     () => ({ preference, scheme, setPreference }),

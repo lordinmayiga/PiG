@@ -1,0 +1,30 @@
+appId: com.pig.app
+---
+- launchApp:
+    clearState: false
+
+- assertVisible: "Connect to your VPS"
+
+# Manual entry flow
+- tapOn: "Enter host & token manually instead"
+- assertVisible: "Host"
+- inputText:
+    text: "147.79.101.172:8787"
+- tapOn: "Paste the token from pig-bridge pair"
+- inputText:
+    text: "a1b2c3d4e5f6"
+
+- tapOn: "Connect"
+
+# Connecting state transition
+- assertVisible: "Continue"
+- tapOn: "Continue"
+
+# OpenRouter step
+- assertVisible: "Add an OpenRouter key"
+- tapOn: "Skip for now"
+
+# Main tab shell validation
+- assertVisible: "Sessions"
+- assertVisible: "Settings"
+- assertVisible: "Browser"

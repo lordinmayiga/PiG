@@ -1,10 +1,17 @@
 import { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import { Mic, Paperclip, Send, X } from 'lucide-react-native';
+import { Mic, Plus, Send, SquareSlash, X } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
+import { DISABLED_OPACITY, useFocusVisible } from '../theme/interaction';
+import { InlineActionSpinner } from './InlineActionSpinner';
+import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
+import { sendRouteInput, type RouteInputAction } from '../network/routeInput';
+import { getBridgeClient } from '../network/bridgeConnection';
+import { loadBridgeCredentials, clearBridgeCredentials } from '../secureStorage';
 import type { FileAttachment } from '../types';
 
 export interface ComposerAttachment extends FileAttachment {
@@ -12,8 +19,32 @@ export interface ComposerAttachment extends FileAttachment {
   uri?: string;
 }
 
-interface ComposerProps {
-  onSend: (text: string, attachments: ComposerAttachment[]) => void;
+export interface ComposerProps {
+  /** The session this composer is submitting into — threaded through to
+   * `sendRouteInput`'s `route_input` envelope so the backend/mock knows
+   * which session's turn this is. Optional only for call sites that don't
+   * have a real session yet (none currently); omitting it sends an empty
+   * sessionId, which the backend would reject as malformed once it's real. */
+  sessionId?: string;
+  /** Called with the cleaned-up prompt text once `/route-input` classifies a
+   * submission as an agent prompt. `alreadySent: true` means the
+   * `route_input` envelope already went out and got a `prompt_routed`
+   * result back (sendStatus should read 'sent'); `sendFailed: true`
+   * (pig-network-states) means `sendRouteInput` itself threw — the message
+   * still needs to show up in the transcript, marked 'failed' with Retry,
+   * never silently dropped. */
+  onSend: (text: string, attachments: ComposerAttachment[], alreadySent?: boolean, sendFailed?: boolean) => void;
+  /**
+   * Called when `/route-input` classifies a submission as an environment
+   * command (kill/new/switch session, etc), after the user has confirmed it
+   * if `requiresConfirm` was set. Optional — screens that don't yet handle
+   * routed actions (e.g. the current fixture-driven demo) can omit it, in
+   * which case Composer falls back to `onSend` so the submission still shows
+   * up somewhere instead of silently vanishing.
+   */
+  onAction?: (action: RouteInputAction) => void;
+  /** Called when the user taps the slash button or types '/' into an empty composer. */
+  onOpenSlash?: () => void;
 }
 
 function kindForMimeType(mimeType: string): FileAttachment['kind'] {
@@ -26,14 +57,34 @@ let nextLocalId = 1;
 
 /**
  * Composer per SPEC.md §3/§6: purely local state until send — no network
- * calls while typing. Attach (photo/camera vs. file), a stub mic button
- * (dictation wiring is out of scope here), and a send button gated on
- * having text or at least one attachment.
+ * calls while typing. Attach (photo/camera vs. file) and a stub mic button
+ * (dictation wiring is out of scope here) share the trailing slot with Send:
+ * mic shows while the composer is empty, Send takes its place once there's
+ * text or an attachment — matches the reference composer design, and means
+ * there's never a dead, permanently-disabled Send button on screen.
+ *
+ * Floating rounded card, not a flush full-width bar — see pig-layout-spacing
+ * (radius.pill is the named "composer pill" token) and pig-color-system
+ * (colors.card as the nested surface on colors.canvas, in both modes).
+ *
+ * Keyboard handling per pig-keyboard-handling: the bottom safe-area inset
+ * collapses to 0 while the keyboard is visible instead of stacking on top of
+ * the keyboard's own height (would otherwise leave a dead gap above it).
  */
-export function Composer({ onSend }: ComposerProps) {
+export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerProps) {
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
+  const insets = useSafeAreaInsets();
+  const keyboardVisible = useKeyboardVisible();
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // pig-interaction-states' element-level loading state for Send: true only
+  // while this composer's own sendRouteInput call is in flight, so a second
+  // tap can't fire a double-send race. Resolves/rejects independently of
+  // whatever TranscriptScreen does with the outcome (point 2/3 below).
+  const [isSending, setIsSending] = useState(false);
+  const attachFocus = useFocusVisible(colors);
+  const slashFocus = useFocusVisible(colors);
+  const sendFocus = useFocusVisible(colors);
 
   const canSend = text.trim().length > 0 || attachments.length > 0;
 
@@ -89,119 +140,277 @@ export function Composer({ onSend }: ComposerProps) {
     ]);
   };
 
-  const handleSend = () => {
-    if (!canSend) return;
-    onSend(text.trim(), attachments);
+  const runAction = (action: RouteInputAction, submittedText: string, submittedAttachments: ComposerAttachment[]) => {
+    if (onAction) {
+      onAction(action);
+    } else {
+      // No screen-level handler wired up yet (Phase 6C's action_confirm
+      // send isn't in place) — fall back to the plain prompt path so the
+      // submission still surfaces instead of disappearing silently.
+      onSend(submittedText, submittedAttachments);
+    }
+  };
+
+  const handleSend = async () => {
+    if (!canSend || isSending) return;
+
+    // Verify pairing credentials exist in storage
+    const creds = await loadBridgeCredentials();
+    if (!creds || !creds.token) {
+      const msg = 'Session expired. Please reconnect to your VPS.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Session expired', msg);
+      }
+      await clearBridgeCredentials();
+      return;
+    }
+
+    const client = getBridgeClient();
+    if (!client || client.getStatus() !== 'connected') {
+      const msg = 'Disconnected from VPS. Reconnect to send messages.';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Disconnected', msg);
+      }
+      return;
+    }
+
+    const submittedText = text.trim();
+    const submittedAttachments = attachments;
+    // Clear the composer immediately — routing happens against a snapshot
+    // of what was submitted, per SPEC §3/§6.
     setText('');
     setAttachments([]);
+
+    setIsSending(true);
+    try {
+      const result = await sendRouteInput(submittedText, submittedAttachments, sessionId ?? '');
+      if (result.kind === 'action') {
+        if (result.requiresConfirm) {
+          Alert.alert(result.action.summary || 'Confirm action', 'This action cannot be undone.', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Confirm',
+              style: 'destructive',
+              onPress: () => {
+                const actionClient = getBridgeClient();
+                const actionId = result.action.params?.actionId as string | undefined;
+                if (actionClient && actionId) {
+                  actionClient.sendActionConfirm({ actionId, confirmed: true }, sessionId);
+                }
+                runAction(result.action, submittedText, submittedAttachments);
+              },
+            },
+          ]);
+        } else {
+          runAction(result.action, submittedText, submittedAttachments);
+        }
+        return;
+      }
+
+      // Normal prompt: post to the screen, marking alreadySent: true since
+      // sendRouteInput has already dispatched the route_input envelope to the bridge.
+      onSend(result.cleanedText || submittedText, submittedAttachments, true);
+    } catch (err) {
+      console.error('[Composer] Failed to route input:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to send input';
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(errorMessage);
+      } else {
+        Alert.alert('Error', errorMessage);
+      }
+      // pig-network-states: never silently drop the attempted send — it
+      // still needs to land in the transcript, marked failed with Retry,
+      // not vanish as if never typed.
+      onSend(submittedText, submittedAttachments, false, true);
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.card, borderTopColor: colors.border, padding: spacing.sm }]}>
-      {attachments.length > 0 ? (
-        <View style={[styles.attachmentRow, { gap: spacing.xs, marginBottom: spacing.xs }]}>
-          {attachments.map((attachment) => (
-            <View
-              key={attachment.id}
-              style={[styles.pendingChip, { backgroundColor: colors.neutral[100], borderRadius: radius.chip, paddingHorizontal: spacing.xs }]}
-            >
-              <Text style={[typeScale.caption, { color: colors.ink, maxWidth: 120 }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
-                {attachment.name}
-              </Text>
-              <Pressable
-                onPress={() => removeAttachment(attachment.id)}
-                accessibilityRole="button"
-                accessibilityLabel={`Remove ${attachment.name}`}
-                hitSlop={8}
-                style={{ marginLeft: spacing.xxs }}
+    <View
+      style={[
+        styles.outer,
+        {
+          backgroundColor: colors.canvas,
+          paddingHorizontal: spacing.sm,
+          paddingTop: spacing.xs,
+          // Collapse the safe-area inset while the keyboard is up instead of
+          // stacking it on top of the keyboard's own height.
+          paddingBottom: spacing.xs + (keyboardVisible ? 0 : insets.bottom),
+        },
+      ]}
+    >
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border, borderRadius: radius.pill, padding: spacing.xs },
+        ]}
+      >
+        {attachments.length > 0 ? (
+          <View style={[styles.attachmentRow, { gap: spacing.xs, paddingHorizontal: spacing.xs, marginBottom: spacing.xxs }]}>
+            {attachments.map((attachment) => (
+              <View
+                key={attachment.id}
+                style={[
+                  styles.pendingChip,
+                  {
+                    backgroundColor: colors.canvas,
+                    borderColor: colors.border,
+                    borderRadius: radius.chip,
+                    paddingHorizontal: spacing.xs,
+                  },
+                ]}
               >
-                <Icon icon={X} size={16} color={colors.inkSecondary} />
-              </Pressable>
-            </View>
-          ))}
-        </View>
-      ) : null}
-
-      <View style={styles.inputRow}>
-        <Pressable
-          onPress={handleAttachPress}
-          accessibilityRole="button"
-          accessibilityLabel="Attach a photo or file"
-          style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
-        >
-          <Icon icon={Paperclip} size={24} color={colors.inkSecondary} />
-        </Pressable>
+                <Text style={[typeScale.caption, { color: colors.ink, maxWidth: 120 }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
+                  {attachment.name}
+                </Text>
+                <Pressable
+                  onPress={() => removeAttachment(attachment.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove ${attachment.name}`}
+                  hitSlop={8}
+                  style={{ marginLeft: spacing.xxs }}
+                >
+                  <Icon icon={X} size={16} color={colors.inkSecondary} />
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
         <TextInput
           value={text}
-          onChangeText={setText}
+          onChangeText={(val) => {
+            setText(val);
+            if (val === '/') {
+              onOpenSlash?.();
+            }
+          }}
           placeholder="Message the agent…"
           placeholderTextColor={colors.inkPlaceholder}
           multiline
           style={[
             styles.input,
             typeScale.body,
-            { color: colors.ink, backgroundColor: colors.canvas, borderRadius: radius.pill, paddingHorizontal: spacing.sm },
+            { color: colors.ink, paddingHorizontal: spacing.xs },
           ]}
           maxFontSizeMultiplier={1.3}
         />
 
-        <Pressable
-          onPress={() => {}}
-          accessibilityRole="button"
-          accessibilityLabel="Dictate (not yet available)"
-          style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
-        >
-          <Icon icon={Mic} size={24} color={colors.inkSecondary} />
-        </Pressable>
+        <View style={[styles.actionRow, { paddingHorizontal: spacing.xxs }]}>
+          <View style={styles.leftActions}>
+            <Pressable
+              testID="composer-attach-btn"
+              onPress={handleAttachPress}
+              accessibilityRole="button"
+              accessibilityLabel="Attach a photo or file"
+              {...attachFocus.focusProps}
+              style={[
+                styles.iconButton,
+                { minWidth: minTouchTarget, minHeight: minTouchTarget },
+                attachFocus.visible && attachFocus.ringStyle,
+              ]}
+            >
+              <Icon icon={Plus} size={20} color={colors.inkSecondary} />
+            </Pressable>
 
-        <Pressable
-          onPress={handleSend}
-          disabled={!canSend}
-          accessibilityRole="button"
-          accessibilityLabel="Send message"
-          style={[
-            styles.sendButton,
-            {
-              backgroundColor: canSend ? colors.accent : colors.neutral[200],
-              borderRadius: radius.pill,
-              minWidth: minTouchTarget,
-              minHeight: minTouchTarget,
-            },
-          ]}
-        >
-          <Icon icon={Send} size={20} color={canSend ? colors.onAccent : colors.inkPlaceholder} />
-        </Pressable>
+            <Pressable
+              testID="composer-slash-btn"
+              onPress={onOpenSlash}
+              accessibilityRole="button"
+              accessibilityLabel="Slash commands"
+              {...slashFocus.focusProps}
+              style={[
+                styles.iconButton,
+                { minWidth: minTouchTarget, minHeight: minTouchTarget },
+                slashFocus.visible && slashFocus.ringStyle,
+              ]}
+            >
+              {/* Slash-commands trigger — a Lucide icon per pig-icons-branding,
+                  not a "/" text glyph in a mono font (that was a pig-typography
+                  violation: mono outside a code block/inline-code/file-viewer,
+                  used as a "techy" flourish). */}
+              <Icon icon={SquareSlash} size={20} color={colors.inkSecondary} />
+            </Pressable>
+          </View>
+
+          {canSend ? (
+            <Pressable
+              testID="composer-send-btn"
+              onPress={handleSend}
+              disabled={isSending}
+              accessibilityRole="button"
+              accessibilityLabel={isSending ? 'Sending message' : 'Send message'}
+              accessibilityState={{ disabled: isSending }}
+              {...sendFocus.focusProps}
+              style={[
+                styles.sendButton,
+                { backgroundColor: colors.accent, borderRadius: radius.pill, minWidth: minTouchTarget, minHeight: minTouchTarget },
+                sendFocus.visible && sendFocus.ringStyle,
+                isSending && { opacity: DISABLED_OPACITY },
+              ]}
+            >
+              {isSending ? (
+                <InlineActionSpinner active size={20} color={colors.onAccent} />
+              ) : (
+                <Icon icon={Send} size={20} color={colors.onAccent} />
+              )}
+            </Pressable>
+          ) : (
+            <Pressable
+              testID="composer-mic-btn"
+              onPress={() => {}}
+              accessibilityRole="button"
+              accessibilityLabel="Dictate (not yet available)"
+              style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
+            >
+              <Icon icon={Mic} size={20} color={colors.inkSecondary} />
+            </Pressable>
+          )}
+        </View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    borderTopWidth: StyleSheet.hairlineWidth,
+  outer: {},
+  card: {
+    borderWidth: StyleSheet.hairlineWidth,
   },
   attachmentRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
   },
+  leftActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
   pendingChip: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 6,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  inputRow: {
+  input: {
+    maxHeight: 120,
+    minHeight: 36,
+    paddingVertical: 8,
+  },
+  actionRow: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   iconButton: {
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  input: {
-    flex: 1,
-    maxHeight: 120,
-    paddingVertical: 10,
   },
   sendButton: {
     alignItems: 'center',

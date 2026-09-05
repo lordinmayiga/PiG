@@ -1,12 +1,39 @@
-import { useState } from 'react';
-import { KeyRound, Lock, Server } from 'lucide-react-native';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { KeyRound, Lock, LogOut, Moon, Server, Smartphone, Sun } from 'lucide-react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { SettingsRow } from '../components/SettingsRow';
-import { mockOpenRouterSettings, mockVpsConnection } from '../fixtures/settings';
-import { useTheme } from '../theme';
+import { clearBridgeCredentials, loadBridgeCredentials, type BridgeCredentials } from '../secureStorage';
+import { loadOpenRouterSettings, saveOpenRouterKey } from '../storage';
+import { useBridge } from '../contexts/BridgeContext';
+import { Icon, useTheme, useThemeMode, type ThemePreference } from '../theme';
+import { usePressScale } from '../theme/motion';
 import type { OpenRouterSettings } from '../types';
+
+/** Last 4 chars only, never the full token — matches the OpenRouter key's masking. */
+function maskToken(token: string): string {
+  const tail = token.slice(-4);
+  return tail ? `Paired · token ending in ${tail}` : 'Paired';
+}
+
+/** Loose format check for an OpenRouter key, matching OpenRouterStep's setup-flow
+ * check — catches obvious typos (empty prefix, way-too-short) without validating
+ * against a fixed-length regex that could reject a legitimate key. */
+function keyFormatError(key: string): string | undefined {
+  const trimmed = key.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.startsWith('sk-or-')) return 'OpenRouter keys start with "sk-or-".';
+  if (trimmed.length < 10) return 'That key looks too short.';
+  return undefined;
+}
+
+const APPEARANCE_OPTIONS: { value: ThemePreference; label: string; icon: typeof Sun }[] = [
+  { value: 'light', label: 'Light', icon: Sun },
+  { value: 'dark', label: 'Dark', icon: Moon },
+  { value: 'system', label: 'System', icon: Smartphone },
+];
 
 /**
  * Settings screen (SPEC.md §3.5, §7): VPS connection details, OpenRouter
@@ -23,51 +50,125 @@ import type { OpenRouterSettings } from '../types';
  */
 export default function SettingsScreen() {
   const { colors, spacing, radius, typeScale, screenMargin, maxFontScale, minTouchTarget } = useTheme();
+  const { preference, setPreference } = useThemeMode();
+  const { client } = useBridge();
 
-  const vps = mockVpsConnection;
-  const [openRouter, setOpenRouter] = useState<OpenRouterSettings>(mockOpenRouterSettings);
+  // null = still loading from secure storage; the safe fallback if the read
+  // fails is "not paired" (see secureStorage.ts), same as everywhere else.
+  const [credentials, setCredentials] = useState<BridgeCredentials | null>(null);
+  const [openRouter, setOpenRouter] = useState<OpenRouterSettings>({ hasKey: false });
   const [requireUnlock, setRequireUnlock] = useState(false);
+
+  useEffect(() => {
+    loadBridgeCredentials().then(setCredentials);
+    loadOpenRouterSettings().then((saved) => {
+      if (saved.hasKey) {
+        setOpenRouter(saved);
+      }
+    });
+    if (client) {
+      client.getOpenRouterKey().then((res) => {
+        if (res.hasKey) {
+          setOpenRouter({ hasKey: true, keySuffix: res.keySuffix });
+        }
+      }).catch(() => {});
+    }
+  }, [client]);
+
+  const handleDisconnect = () => {
+    console.log('[PiG Settings] "Disconnect" button clicked');
+    const performDisconnect = async () => {
+      console.log('[PiG Settings] Clearing bridge credentials and disconnecting...');
+      await clearBridgeCredentials();
+      setCredentials(null);
+      // RootNavigator listens for this change and swaps back to Setup
+      // on its own — no direct navigation call needed here.
+    };
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      if (window.confirm("Disconnect from VPS? You'll need to pair again to reconnect.")) {
+        void performDisconnect();
+      }
+      return;
+    }
+
+    Alert.alert('Disconnect from VPS?', "You'll need to pair again to reconnect.", [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Disconnect',
+        style: 'destructive',
+        onPress: () => {
+          void performDisconnect();
+        },
+      },
+    ]);
+  };
+
+  // Key editor's Cancel/Save are plain Pressables (not SettingsRow), so they
+  // get their own press-scale feedback (pig-motion §6, Rows).
+  const cancelPress = usePressScale();
+  const savePress = usePressScale();
 
   const [isEditingKey, setIsEditingKey] = useState(false);
   // Transient plaintext input only — cleared the moment Save mocks the
   // round trip. Never merged into persisted state; only the masked
   // `keySuffix` is kept, matching §7's "key held server-side only" rule.
   const [keyDraft, setKeyDraft] = useState('');
+  // Live field-level validation, checked once the user blurs the field —
+  // an inline border+caption error before Save, not just a post-submit
+  // Alert (pig-interaction-states' field-level error state).
+  const [keyDraftError, setKeyDraftError] = useState<string | undefined>(undefined);
 
   const openKeyEditor = () => {
     setKeyDraft('');
+    setKeyDraftError(undefined);
     setIsEditingKey(true);
   };
 
   const cancelKeyEdit = () => {
     setKeyDraft('');
+    setKeyDraftError(undefined);
     setIsEditingKey(false);
   };
 
   const saveKeyEdit = () => {
     const trimmed = keyDraft.trim();
     if (!trimmed) {
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert('Paste a key before saving, or cancel.');
+        return;
+      }
       Alert.alert('Key required', 'Paste a key before saving, or cancel.');
       return;
     }
-    // Mock: a real save would POST the plaintext key to the VPS backend and
-    // only ever get a masked suffix back. Nothing but that suffix is kept.
-    setOpenRouter({ hasKey: true, keySuffix: trimmed.slice(-4) });
+    const formatError = keyFormatError(trimmed);
+    if (formatError) {
+      setKeyDraftError(formatError);
+      return;
+    }
+    const suffix = trimmed.slice(-4);
+    setOpenRouter({ hasKey: true, keySuffix: suffix });
+    void saveOpenRouterKey(trimmed);
+    if (client) {
+      client.setOpenRouterKey(trimmed).catch((err) => {
+        console.error('[PiG Settings] Failed to save OpenRouter key to backend:', err);
+      });
+    }
     setKeyDraft('');
     setIsEditingKey(false);
   };
 
-  const vpsStatus = vps.paired
-    ? `Paired · last connected ${formatRelativeTime(vps.lastConnectedAt)}`
-    : 'Not paired';
+  const vpsStatus = credentials ? maskToken(credentials.token) : 'Not paired';
 
   const keyValue = openRouter.hasKey && openRouter.keySuffix ? `Ending in ${openRouter.keySuffix}` : 'Not set';
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.canvas }]} edges={['top', 'bottom']}>
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: screenMargin, paddingBottom: spacing.xl }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <Text
           maxFontSizeMultiplier={maxFontScale}
@@ -76,9 +177,51 @@ export default function SettingsScreen() {
           Settings
         </Text>
 
+        <SectionHeader label="Appearance" />
+        <View
+          style={[
+            styles.segmented,
+            { backgroundColor: colors.canvas, borderColor: colors.border, borderRadius: radius.pill, padding: 3, gap: 3 },
+          ]}
+        >
+          {APPEARANCE_OPTIONS.map((option) => {
+            const isActive = preference === option.value;
+            return (
+              <Pressable
+                key={option.value}
+                onPress={() => setPreference(option.value)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isActive }}
+                accessibilityLabel={`${option.label} appearance`}
+                style={({ pressed }) => [
+                  styles.segment,
+                  {
+                    minHeight: minTouchTarget - 8,
+                    borderRadius: radius.pill,
+                    backgroundColor: isActive ? colors.accent : 'transparent',
+                    opacity: pressed && !isActive ? 0.6 : 1,
+                    gap: spacing.xxs,
+                  },
+                ]}
+              >
+                <Icon icon={option.icon} size={16} color={isActive ? colors.onAccent : colors.inkSecondary} />
+                <Text
+                  maxFontSizeMultiplier={maxFontScale}
+                  style={[typeScale.label, { color: isActive ? colors.onAccent : colors.inkSecondary }]}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
         <SectionHeader label="VPS connection" />
         <View style={[styles.card, { backgroundColor: colors.card, borderRadius: radius.card, borderColor: colors.border }]}>
-          <SettingsRow icon={Server} label={vps.host} value={vpsStatus} />
+          <SettingsRow icon={Server} label={credentials?.host ?? 'No VPS paired'} value={vpsStatus} />
+          {credentials ? (
+            <SettingsRow icon={LogOut} label="Disconnect" onPress={handleDisconnect} />
+          ) : null}
         </View>
 
         <SectionHeader label="OpenRouter" />
@@ -100,7 +243,11 @@ export default function SettingsScreen() {
             <View style={[styles.editor, { paddingBottom: spacing.sm, gap: spacing.xs }]}>
               <TextInput
                 value={keyDraft}
-                onChangeText={setKeyDraft}
+                onChangeText={(text) => {
+                  setKeyDraft(text);
+                  if (keyDraftError) setKeyDraftError(keyFormatError(text));
+                }}
+                onBlur={() => setKeyDraftError(keyFormatError(keyDraft))}
                 placeholder="Paste your OpenRouter key"
                 placeholderTextColor={colors.inkPlaceholder}
                 secureTextEntry
@@ -112,7 +259,7 @@ export default function SettingsScreen() {
                   {
                     color: colors.ink,
                     backgroundColor: colors.canvas,
-                    borderColor: colors.border,
+                    borderColor: keyDraftError ? colors.destructive : colors.border,
                     borderWidth: StyleSheet.hairlineWidth,
                     borderRadius: radius.chip,
                     paddingHorizontal: spacing.sm,
@@ -120,40 +267,49 @@ export default function SettingsScreen() {
                   },
                 ]}
               />
-              <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.caption, { color: colors.inkSecondary }]}>
-                Held on your VPS only — this app never stores or displays the full key.
-              </Text>
+              {keyDraftError ? (
+                <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.caption, { color: colors.destructive }]}>
+                  {keyDraftError}
+                </Text>
+              ) : (
+                <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.caption, { color: colors.inkSecondary }]}>
+                  Held on your VPS only — this app never stores or displays the full key.
+                </Text>
+              )}
               <View style={[styles.editorActions, { gap: spacing.sm }]}>
                 <Pressable
                   onPress={cancelKeyEdit}
                   accessibilityRole="button"
                   accessibilityLabel="Cancel"
-                  style={({ pressed }) => [
-                    styles.editorButton,
-                    { minHeight: minTouchTarget, borderRadius: radius.pill, opacity: pressed ? 0.6 : 1 },
-                  ]}
+                  {...cancelPress.pressProps}
+                  style={{ minHeight: minTouchTarget }}
                 >
-                  <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.label, { color: colors.inkSecondary }]}>
-                    Cancel
-                  </Text>
+                  <Animated.View
+                    style={[styles.editorButton, cancelPress.style, { minHeight: minTouchTarget, borderRadius: radius.pill }]}
+                  >
+                    <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.label, { color: colors.inkSecondary }]}>
+                      Cancel
+                    </Text>
+                  </Animated.View>
                 </Pressable>
                 <Pressable
                   onPress={saveKeyEdit}
                   accessibilityRole="button"
                   accessibilityLabel="Save key"
-                  style={({ pressed }) => [
-                    styles.editorButton,
-                    {
-                      minHeight: minTouchTarget,
-                      borderRadius: radius.pill,
-                      backgroundColor: colors.accent,
-                      opacity: pressed ? 0.85 : 1,
-                    },
-                  ]}
+                  {...savePress.pressProps}
+                  style={{ minHeight: minTouchTarget }}
                 >
-                  <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.label, { color: colors.onAccent }]}>
-                    Save
-                  </Text>
+                  <Animated.View
+                    style={[
+                      styles.editorButton,
+                      savePress.style,
+                      { minHeight: minTouchTarget, borderRadius: radius.pill, backgroundColor: colors.accent },
+                    ]}
+                  >
+                    <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.label, { color: colors.onAccent }]}>
+                      Save
+                    </Text>
+                  </Animated.View>
                 </Pressable>
               </View>
             </View>
@@ -162,6 +318,17 @@ export default function SettingsScreen() {
 
         <SectionHeader label="Security" />
         <View style={[styles.card, { backgroundColor: colors.card, borderRadius: radius.card, borderColor: colors.border }]}>
+          {/*
+            Switch feedback (Phase 5 pig-motion): the native Switch already
+            animates its thumb/track transition on Android and iOS, so no
+            custom Reanimated motion is layered on top here — matching
+            "platform-native spring toggle, no custom delay" from the skill.
+            A haptic tick on toggle is intentionally not added: expo-haptics
+            isn't a dependency of this app yet (checked package.json) and no
+            other screen in the app uses haptics, so adding it here would
+            mean pulling in and prebuilding a new native module for a single
+            row. Revisit once expo-haptics is adopted app-wide.
+          */}
           <SettingsRow
             icon={Lock}
             label="Require unlock to open app"
@@ -186,6 +353,7 @@ export default function SettingsScreen() {
           </Text>
         </View>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -212,18 +380,6 @@ function SectionHeader({ label }: { label: string }) {
   );
 }
 
-function formatRelativeTime(iso?: string): string {
-  if (!iso) return 'never';
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const minutes = Math.round(diffMs / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-}
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -244,5 +400,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 16,
+  },
+  segmented: {
+    flexDirection: 'row',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  segment: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

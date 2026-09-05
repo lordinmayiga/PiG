@@ -1,0 +1,1656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PiG — Session Chat Mockup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* PiG Locked Color System (pig-color-system) */
+    :root {
+      --canvas: #fbf5f3;
+      --card: #ffffff;
+      --elevated: #ffffff;
+      --border: #e4dad5;
+      --ink: #0f0e0e;
+      --ink-secondary: #453b37;
+      --ink-muted: #85756f;
+      --accent: #7e2e84;
+      --accent-tint: rgba(126, 46, 132, 0.08);
+      --on-accent: #ffffff;
+      --destructive: #bf4e30;
+      --success-dot: #8daa9d;
+      --warning: #8b6118;
+      --neutral-100: #f2ebe8;
+      --neutral-200: #e4dad5;
+      --neutral-300: #cbbdb6;
+      --neutral-800: #2a2321;
+      --scrim: rgba(15, 14, 14, 0.45);
+      --code-surface: #f2ebe8;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+      --radius-pill: 9999px;
+      --font-ui: 'Onest', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'Roboto Mono', monospace;
+      --transition-timing: 200ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    [data-theme="dark"] {
+      --canvas: #0f0e0e;
+      --card: #1c1917;
+      --elevated: #26211f;
+      --border: #2a2321;
+      --ink: #fbf5f3;
+      --ink-secondary: #a99a93;
+      --ink-muted: #85756f;
+      --accent: #cd89d2;
+      --accent-tint: rgba(205, 137, 210, 0.12);
+      --on-accent: #0f0e0e;
+      --destructive: #da846c;
+      --success-dot: #8daa9d;
+      --warning: #d2962d;
+      --neutral-100: #2a2321;
+      --neutral-200: #372f2c;
+      --neutral-300: #635550;
+      --neutral-800: #2a2321;
+      --scrim: rgba(0, 0, 0, 0.7);
+      --code-surface: #191615;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      font-family: var(--font-ui);
+      background: #1e1b1a;
+      color: var(--ink);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 24px 16px;
+    }
+
+    /* Outer Demo Bar */
+    .demo-toolbar {
+      width: 100%;
+      max-width: 440px;
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--radius-md);
+      padding: 10px 16px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #fbf5f3;
+      font-size: 13px;
+    }
+
+    .demo-toolbar-title {
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .demo-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .demo-btn {
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #fff;
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 150ms ease;
+    }
+
+    .demo-btn:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+
+    /* Mobile Container Frame */
+    .mobile-frame {
+      width: 100%;
+      max-width: 420px;
+      height: 844px;
+      background: var(--canvas);
+      border-radius: 40px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5), 0 0 0 10px #2a2321;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      border: 1px solid var(--border);
+      transition: background var(--transition-timing);
+    }
+
+    /* Status Bar */
+    .status-bar {
+      height: 38px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+      user-select: none;
+      z-index: 10;
+    }
+
+    /* Screen Header */
+    .header {
+      height: 52px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: var(--canvas);
+      z-index: 10;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .back-btn {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      color: var(--ink);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+    }
+
+    .session-info {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .session-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
+      line-height: 1.2;
+    }
+
+    .session-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 2px;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success-dot);
+    }
+
+    .status-text {
+      font-size: 11px;
+      color: var(--ink-secondary);
+      font-weight: 500;
+    }
+
+    .model-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--neutral-100);
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: var(--radius-pill);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--ink-secondary);
+      cursor: pointer;
+      transition: all 120ms ease;
+    }
+
+    .model-badge:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* Transcript Area */
+    .transcript {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* User Turn */
+    .user-turn {
+      align-self: flex-end;
+      max-width: 82%;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+    }
+
+    .user-bubble {
+      background: var(--accent);
+      color: var(--on-accent);
+      padding: 10px 14px;
+      border-radius: 18px;
+      border-bottom-right-radius: 4px;
+      font-size: 14px;
+      line-height: 1.45;
+      font-weight: 400;
+    }
+
+    .timestamp {
+      font-size: 11px;
+      color: var(--ink-muted);
+      padding: 0 4px;
+    }
+
+    /* Agent Turn (Full width, no bubble per pig-markdown-rendering) */
+    .agent-turn {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .turn-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .turn-author {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    /* Thinking Stream Accordion & 7-Line Sliding Window */
+    .thinking-accordion {
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      margin-bottom: 6px;
+      transition: border-color var(--transition-timing);
+    }
+
+    .thinking-accordion.streaming {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-tint);
+    }
+
+    .thinking-header {
+      width: 100%;
+      padding: 9px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      text-align: left;
+      font-family: var(--font-ui);
+    }
+
+    .thinking-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink-secondary);
+    }
+
+    .thinking-pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: inline-block;
+      animation: pulse-dot 1.2s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse-dot {
+      0% { opacity: 0.3; transform: scale(0.85); }
+      100% { opacity: 1; transform: scale(1.15); }
+    }
+
+    .thinking-chevron {
+      color: var(--ink-muted);
+      transition: transform 180ms ease;
+    }
+
+    .thinking-accordion.expanded .thinking-chevron {
+      transform: rotate(180deg);
+    }
+
+    /* 7-line dynamic growing rolling viewport */
+    .thinking-body {
+      padding: 8px 12px 10px 14px;
+      border-top: 1px dashed var(--border);
+      background: var(--neutral-100);
+      border-left: 3px solid var(--accent);
+      display: none;
+      overflow: hidden;
+      transition: max-height 200ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .thinking-accordion.expanded .thinking-body {
+      display: block;
+    }
+
+    .thinking-lines-container {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 154px; /* Dynamically grows from 1 up to 7 lines */
+      overflow: hidden;
+      position: relative;
+    }
+
+    .thought-line {
+      font-size: 12px;
+      line-height: 18px;
+      color: var(--ink-secondary);
+      font-family: var(--font-ui);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: opacity 180ms ease, transform 180ms cubic-bezier(0.16, 1, 0.3, 1), margin-top 180ms ease;
+    }
+
+    .thought-line.entering {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+
+    .thought-line.active {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .thought-line.leaving {
+      opacity: 0;
+      transform: translateY(-10px);
+      margin-top: -22px; /* Smooth collapse of exiting line */
+    }
+
+    /* Thought Syntax Highlighting */
+    .thought-line .hl-kw {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .thought-line .hl-path {
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      background: var(--accent-tint);
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+
+    .thought-line .hl-num {
+      color: var(--warning);
+      font-family: var(--font-mono);
+      font-weight: 500;
+    }
+
+    .thought-line .hl-code {
+      font-family: var(--font-mono);
+      color: var(--ink);
+      background: var(--code-surface);
+      padding: 1px 4px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    /* Markdown Body */
+    .markdown-content {
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--ink);
+    }
+
+    .markdown-content p {
+      margin-bottom: 10px;
+    }
+
+    .markdown-content a {
+      color: var(--accent);
+      text-decoration: underline;
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    .markdown-code-block {
+      background: var(--code-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      margin: 12px 0;
+      font-family: var(--font-mono);
+    }
+
+    .code-block-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--ink-secondary);
+      background: var(--neutral-100);
+    }
+
+    .copy-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: 11px;
+      color: var(--ink-secondary);
+      cursor: pointer;
+      font-family: var(--font-ui);
+    }
+
+    .code-block-body {
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-x: auto;
+      color: var(--ink);
+    }
+
+    /* Attachment Chips */
+    .attachment-chips-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .file-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: all 120ms ease;
+      max-width: 240px;
+    }
+
+    .file-chip:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+
+    .file-chip-icon {
+      color: var(--ink-secondary);
+      display: flex;
+      align-items: center;
+    }
+
+    .file-chip-info {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .file-chip-name {
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .file-chip-size {
+      font-size: 10.5px;
+      color: var(--ink-muted);
+    }
+
+    /* PiG Real Composer Design (Matched from src/components/Composer.tsx) */
+    .composer-wrap {
+      padding: 8px 12px 14px 12px;
+      background: var(--canvas);
+      z-index: 20;
+    }
+
+    .composer-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 8px 10px 8px 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: border-color 150ms ease;
+    }
+
+    .composer-card:focus-within {
+      border-color: var(--accent);
+    }
+
+    .composer-textarea {
+      width: 100%;
+      min-height: 36px;
+      max-height: 120px;
+      border: none;
+      background: transparent;
+      font-family: var(--font-ui);
+      font-size: 14px;
+      color: var(--ink);
+      outline: none;
+      resize: none;
+      line-height: 1.4;
+      padding: 2px 0 4px 0;
+    }
+
+    .composer-textarea::placeholder {
+      color: var(--ink-muted);
+    }
+
+    .composer-action-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 2px;
+    }
+
+    .composer-left-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .composer-icon-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: var(--radius-sm);
+      border: none;
+      background: transparent;
+      color: var(--ink-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 120ms ease;
+    }
+
+    .composer-icon-btn:hover {
+      background: var(--neutral-100);
+      color: var(--accent);
+    }
+
+    .composer-icon-btn.slash-btn {
+      font-family: var(--font-mono);
+      font-size: 17px;
+      font-weight: 700;
+    }
+
+    .composer-send-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: var(--radius-pill);
+      background: var(--accent);
+      color: var(--on-accent);
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 120ms ease, background 150ms ease;
+    }
+
+    .composer-send-btn:hover {
+      transform: scale(1.05);
+    }
+
+    /* Overlay / Bottom Sheet Backdrop */
+    .sheet-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--scrim);
+      backdrop-filter: blur(2px);
+      z-index: 100;
+      display: none;
+      opacity: 0;
+      transition: opacity 200ms ease;
+    }
+
+    .sheet-overlay.active {
+      display: flex;
+      opacity: 1;
+    }
+
+    /* Slash Commands Sheet */
+    .slash-sheet {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--elevated);
+      border-top-left-radius: var(--radius-lg);
+      border-top-right-radius: var(--radius-lg);
+      padding: 16px;
+      max-height: 80%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transform: translateY(100%);
+      transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 -10px 30px rgba(0,0,0,0.3);
+      border-top: 1px solid var(--border);
+    }
+
+    .sheet-overlay.active .slash-sheet {
+      transform: translateY(0);
+    }
+
+    .sheet-handle {
+      width: 36px;
+      height: 4px;
+      background: var(--neutral-300);
+      border-radius: 2px;
+      align-self: center;
+      margin-bottom: 4px;
+    }
+
+    .sheet-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .sheet-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    .sheet-close-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--neutral-100);
+      border: none;
+      color: var(--ink-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .sheet-search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--neutral-100);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 8px 12px;
+    }
+
+    .sheet-search input {
+      flex: 1;
+      border: none;
+      background: transparent;
+      font-family: var(--font-ui);
+      font-size: 13.5px;
+      color: var(--ink);
+      outline: none;
+    }
+
+    .commands-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 380px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .command-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-radius: var(--radius-md);
+      background: var(--card);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: all 120ms ease;
+    }
+
+    .command-item:hover {
+      border-color: var(--accent);
+      background: var(--accent-tint);
+    }
+
+    .command-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .command-icon-wrap {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: var(--neutral-100);
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .command-name {
+      font-family: var(--font-mono);
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    .command-desc {
+      font-size: 12px;
+      color: var(--ink-secondary);
+    }
+
+    .command-badge {
+      font-size: 11px;
+      background: var(--neutral-100);
+      color: var(--ink-muted);
+      padding: 2px 8px;
+      border-radius: var(--radius-pill);
+      font-weight: 500;
+    }
+
+    /* File Viewer Sheet Mockup */
+    .file-viewer-sheet {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--elevated);
+      border-top-left-radius: var(--radius-lg);
+      border-top-right-radius: var(--radius-lg);
+      padding: 16px;
+      max-height: 85%;
+      height: 600px;
+      display: flex;
+      flex-direction: column;
+      transform: translateY(100%);
+      transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1), height 200ms ease;
+      box-shadow: 0 -10px 30px rgba(0,0,0,0.3);
+      border-top: 1px solid var(--border);
+    }
+
+    .file-viewer-sheet.fullscreen {
+      height: 100%;
+      max-height: 100%;
+      border-radius: 0;
+    }
+
+    .sheet-overlay.active .file-viewer-sheet {
+      transform: translateY(0);
+    }
+
+    .viewer-content-area {
+      flex: 1;
+      overflow-y: auto;
+      background: var(--canvas);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px;
+      margin: 12px 0;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .viewer-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .primary-btn {
+      flex: 1;
+      padding: 10px 16px;
+      background: var(--accent);
+      color: var(--on-accent);
+      border: none;
+      border-radius: var(--radius-pill);
+      font-family: var(--font-ui);
+      font-size: 13.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .primary-btn:hover {
+      opacity: 0.92;
+    }
+
+    /* Toast */
+    .toast {
+      position: absolute;
+      top: 60px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-20px);
+      background: var(--ink);
+      color: var(--canvas);
+      padding: 8px 16px;
+      border-radius: var(--radius-pill);
+      font-size: 12px;
+      font-weight: 500;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 180ms ease;
+      z-index: 200;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+      white-space: nowrap;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Markdown Pill View/Raw */
+    .pill-container {
+      display: inline-flex;
+      background: var(--neutral-100);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      padding: 2px;
+    }
+
+    .pill-btn {
+      padding: 3px 8px;
+      border-radius: var(--radius-pill);
+      border: none;
+      background: transparent;
+      font-family: var(--font-ui);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink-secondary);
+      cursor: pointer;
+    }
+
+    .pill-btn.active {
+      background: var(--accent);
+      color: var(--on-accent);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Demo Bar -->
+  <div class="demo-toolbar">
+    <div class="demo-toolbar-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+      <span>PiG Chat & Slash Mockup</span>
+    </div>
+    <div class="demo-controls">
+      <button class="demo-btn" onclick="toggleTheme()">Toggle Theme</button>
+      <button class="demo-btn" onclick="simulateStream()">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        <span>Simulate 7-Line Stream</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Mobile Screen Frame -->
+  <div class="mobile-frame" id="mobileFrame">
+
+    <!-- Toast Notification (Zero emojis) -->
+    <div class="toast" id="toast">Downloaded file only (on-demand)</div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>5G</span>
+    </div>
+
+    <!-- Session Header -->
+    <div class="header">
+      <div class="header-left">
+        <button class="back-btn" title="Back">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </button>
+        <div class="session-info">
+          <span class="session-name">phase8-chat-files</span>
+          <div class="session-meta">
+            <span class="status-dot"></span>
+            <span class="status-text">Connected</span>
+          </div>
+        </div>
+      </div>
+      <div class="model-badge" id="headerModelBadge" onclick="openSlashModal('/model')" title="Click to change model">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
+        <span id="activeModelLabel">Claude 3.7 Sonnet</span>
+      </div>
+    </div>
+
+    <!-- Transcript Area -->
+    <div class="transcript" id="transcript">
+
+      <!-- User Turn -->
+      <div class="user-turn">
+        <div class="user-bubble">
+          Review the backend file-serving routes and generate the report with our architecture notes.
+        </div>
+        <span class="timestamp">9:38 AM</span>
+      </div>
+
+      <!-- Agent Turn -->
+      <div class="agent-turn">
+        <div class="turn-header">
+          <span class="turn-author">Agent</span>
+          <span class="status-dot"></span>
+          <span class="timestamp">just now</span>
+        </div>
+
+        <!-- Thinking Stream Component (Sliding 7-Line Window + Auto-Collapse) -->
+        <div class="thinking-accordion" id="thinkingAccordion">
+          <button class="thinking-header" onclick="toggleThinking()">
+            <div class="thinking-title-row">
+              <span id="thinkingPulseDot" class="thinking-pulse-dot" style="display:none;"></span>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a6 6 0 0 0-6 6c0 2.2 1.2 4.1 3 5.2V16a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-2.8c1.8-1.1 3-3 3-5.2a6 6 0 0 0-6-6z"></path><path d="M9 21h6"></path><path d="M10 17h4"></path></svg>
+              <span id="thinkingTitle">Thought for 3.2s</span>
+            </div>
+            <svg class="thinking-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+
+          <!-- 7-line rolling viewport -->
+          <div class="thinking-body" id="thinkingBody">
+            <div class="thinking-lines-container" id="thinkingLinesContainer">
+              <div class="thought-line active">1. Inbound request: review file-serving routes and summarize.</div>
+              <div class="thought-line active">2. Checking backend/src/server.ts for route definitions.</div>
+              <div class="thought-line active">3. Inspecting ticket authentication logic in backend/src/httpFiles.ts.</div>
+              <div class="thought-line active">4. Confirming 60-second single-use ticket expiry window.</div>
+              <div class="thought-line active">5. Evaluating MIME resolution mapping in files.ts.</div>
+              <div class="thought-line active">6. Emitted output files to .pig-output/ for preview.</div>
+              <div class="thought-line active">7. Turn complete. Auto-collapsing thought stream.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Markdown Body -->
+        <div class="markdown-content">
+          <p>
+            I've completed the audit of our backend file-serving architecture. You can inspect <a onclick="openFileViewer('analysis_summary.md', 'markdown')">analysis_summary.md</a> or view the source in <a onclick="openFileViewer('server.ts', 'code')">server.ts</a>.
+          </p>
+          <p>
+            All file requests now require a 60s single-use authentication ticket minted over the WebSocket bridge:
+          </p>
+
+          <!-- Monospace Code Block -->
+          <div class="markdown-code-block">
+            <div class="code-block-header">
+              <span>typescript • backend/src/httpFiles.ts</span>
+              <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+            </div>
+            <pre class="code-block-body"><code>export function mintRawFileTicket(filePath: string): string {
+  const token = randomUUID();
+  tickets.set(token, { filePath, expiresAt: Date.now() + 60_000 });
+  return token;
+}</code></pre>
+          </div>
+
+          <p>
+            The files produced during this turn have been placed in <code>.pig-output/</code>. Click any file below to preview it:
+          </p>
+        </div>
+
+        <!-- Attachment Chips -->
+        <div class="attachment-chips-wrap">
+          <!-- Markdown Chip -->
+          <div class="file-chip" onclick="openFileViewer('analysis_summary.md', 'markdown')">
+            <span class="file-chip-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+            </span>
+            <div class="file-chip-info">
+              <span class="file-chip-name">analysis_summary.md</span>
+              <span class="file-chip-size">1.8 KB • Markdown</span>
+            </div>
+          </div>
+
+          <!-- Code Chip -->
+          <div class="file-chip" onclick="openFileViewer('server.ts', 'code')">
+            <span class="file-chip-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+            </span>
+            <div class="file-chip-info">
+              <span class="file-chip-name">server.ts</span>
+              <span class="file-chip-size">16.6 KB • Code</span>
+            </div>
+          </div>
+
+          <!-- Image Chip -->
+          <div class="file-chip" onclick="openFileViewer('architecture.png', 'image')">
+            <span class="file-chip-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+            </span>
+            <div class="file-chip-info">
+              <span class="file-chip-name">architecture.png</span>
+              <span class="file-chip-size">42.1 KB • Image</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- PiG Real Composer Card Design (Stacked Input on top, Action Row on bottom) -->
+    <div class="composer-wrap">
+      <div class="composer-card">
+        <textarea
+          id="composerInput"
+          class="composer-textarea"
+          rows="1"
+          placeholder="Message the agent…"
+          oninput="handleComposerInput(this)"
+        ></textarea>
+        <div class="composer-action-row">
+          <div class="composer-left-actions">
+            <!-- '+' Attach Button (Plus icon) -->
+            <button class="composer-icon-btn" title="Attach photo or file" onclick="showToast('Attach picker opened')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            </button>
+            <!-- '/' Slash Button directly next to '+' -->
+            <button class="composer-icon-btn slash-btn" title="Slash commands" onclick="openSlashModal()">
+              /
+            </button>
+          </div>
+
+          <!-- Right: Mic or Send Button -->
+          <div id="composerRightSlot">
+            <button class="composer-icon-btn" id="composerMicBtn" title="Dictate" onclick="showToast('Dictation not yet available')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+            </button>
+            <button class="composer-send-btn" id="composerSendBtn" style="display:none;" title="Send message" onclick="handleSendMessage()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sheet Overlay Container -->
+    <div class="sheet-overlay" id="sheetOverlay" onclick="closeAllSheets(event)">
+
+      <!-- 1. Slash Commands Overlay Sheet (Zero Emojis, Pure SVG Icons) -->
+      <div class="slash-sheet" id="slashSheet" onclick="event.stopPropagation()">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <span class="sheet-title" id="slashSheetTitle">Commands & Tools</span>
+          <button class="sheet-close-btn" onclick="closeAllSheets()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+
+        <div class="sheet-search">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="text" id="slashSearchInput" placeholder="Search commands or choose below…" oninput="filterCommands(this.value)" />
+        </div>
+
+        <!-- Command List View -->
+        <div class="commands-list" id="commandsList">
+
+          <!-- /model -->
+          <div class="command-item" onclick="showModelPicker()">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
+              </div>
+              <div>
+                <div class="command-name">/model</div>
+                <div class="command-desc">Choose active AI model & reasoning</div>
+              </div>
+            </div>
+            <span class="command-badge" id="commandModelCurrent">Claude 3.7</span>
+          </div>
+
+          <!-- /usage -->
+          <div class="command-item" onclick="showUsageView()">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+              </div>
+              <div>
+                <div class="command-name">/usage</div>
+                <div class="command-desc">Session token counts & context breakdown</div>
+              </div>
+            </div>
+            <span class="command-badge">14.2k tokens</span>
+          </div>
+
+          <!-- /cost -->
+          <div class="command-item" onclick="showToast('Session estimated cost: $0.042')">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+              </div>
+              <div>
+                <div class="command-name">/cost</div>
+                <div class="command-desc">View estimated session cost</div>
+              </div>
+            </div>
+            <span class="command-badge">$0.042</span>
+          </div>
+
+          <!-- /compact -->
+          <div class="command-item" onclick="showToast('Context compacted successfully'); closeAllSheets();">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+              </div>
+              <div>
+                <div class="command-name">/compact</div>
+                <div class="command-desc">Truncate older context to save tokens</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- /clear -->
+          <div class="command-item" onclick="showToast('Transcript cleared'); closeAllSheets();">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              </div>
+              <div>
+                <div class="command-name">/clear</div>
+                <div class="command-desc">Reset conversation history</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- /doctor -->
+          <div class="command-item" onclick="showToast('VPS & Bridge health check: OK'); closeAllSheets();">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+              </div>
+              <div>
+                <div class="command-name">/doctor</div>
+                <div class="command-desc">Run bridge and tmux diagnostics</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Sub-View: Model Picker -->
+        <div class="commands-list" id="modelPickerList" style="display:none;">
+          <div style="font-size:12px; color:var(--ink-secondary); margin-bottom:4px;">
+            Select model for this session:
+          </div>
+          <div class="command-item" onclick="selectModel('Claude 3.7 Sonnet (Thinking)')">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a6 6 0 0 0-6 6c0 2.2 1.2 4.1 3 5.2V16a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-2.8c1.8-1.1 3-3 3-5.2a6 6 0 0 0-6-6z"></path><path d="M9 21h6"></path><path d="M10 17h4"></path></svg>
+              </div>
+              <div>
+                <div class="command-name">Claude 3.7 Sonnet</div>
+                <div class="command-desc">Extended thinking & code reasoning</div>
+              </div>
+            </div>
+            <span class="command-badge">Thinking</span>
+          </div>
+          <div class="command-item" onclick="selectModel('Claude 3.5 Sonnet')">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+              </div>
+              <div>
+                <div class="command-name">Claude 3.5 Sonnet</div>
+                <div class="command-desc">Fast, balanced, general coding</div>
+              </div>
+            </div>
+          </div>
+          <div class="command-item" onclick="selectModel('Claude 3.5 Haiku')">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+              </div>
+              <div>
+                <div class="command-name">Claude 3.5 Haiku</div>
+                <div class="command-desc">Ultra fast, lightweight tasks</div>
+              </div>
+            </div>
+          </div>
+          <div class="command-item" onclick="selectModel('Gemini 2.0 Flash')">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polygon points="12 8 8 12 12 16 16 12 12 8"></polygon></svg>
+              </div>
+              <div>
+                <div class="command-name">Gemini 2.0 Flash</div>
+                <div class="command-desc">High-speed multimodal agent</div>
+              </div>
+            </div>
+          </div>
+          <div class="command-item" onclick="selectModel('DeepSeek R1')">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+              </div>
+              <div>
+                <div class="command-name">DeepSeek R1</div>
+                <div class="command-desc">Deep reasoning via OpenRouter</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sub-View: Usage Breakdown -->
+        <div class="commands-list" id="usageViewList" style="display:none;">
+          <div style="font-size:12px; color:var(--ink-secondary); margin-bottom:8px;">
+            Session Token & Context Consumption:
+          </div>
+          <div class="command-item">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>
+              </div>
+              <div>
+                <div class="command-name">Input Tokens</div>
+                <div class="command-desc">13,890 tokens</div>
+              </div>
+            </div>
+          </div>
+          <div class="command-item">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a6 6 0 0 0-6 6c0 2.2 1.2 4.1 3 5.2V16a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-2.8c1.8-1.1 3-3 3-5.2a6 6 0 0 0-6-6z"></path></svg>
+              </div>
+              <div>
+                <div class="command-name">Thinking Tokens</div>
+                <div class="command-desc">840 tokens</div>
+              </div>
+            </div>
+          </div>
+          <div class="command-item">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+              </div>
+              <div>
+                <div class="command-name">Output Tokens</div>
+                <div class="command-desc">720 tokens</div>
+              </div>
+            </div>
+          </div>
+          <div class="command-item">
+            <div class="command-left">
+              <div class="command-icon-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+              </div>
+              <div>
+                <div class="command-name">Cache Read Tokens</div>
+                <div class="command-desc">11,200 tokens (80% saved)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 2. File Viewer Sheet (Existing Viewer Reused) -->
+      <div class="file-viewer-sheet" id="fileViewerSheet" onclick="event.stopPropagation()">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <span class="sheet-title" id="viewerFileName">analysis_summary.md</span>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <!-- Preview / Raw Pill for Markdown -->
+            <div class="pill-container" id="markdownPill" style="display:none;">
+              <button class="pill-btn active" id="btnPreview" onclick="setMarkdownView('preview')">Preview</button>
+              <button class="pill-btn" id="btnRaw" onclick="setMarkdownView('raw')">Raw</button>
+            </div>
+            <!-- Fullscreen expand button -->
+            <button class="sheet-close-btn" onclick="toggleFullscreenViewer()" title="Fullscreen">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            </button>
+            <button class="sheet-close-btn" onclick="closeAllSheets()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="viewer-content-area" id="viewerContentArea">
+          <!-- Populated dynamically -->
+        </div>
+
+        <div class="viewer-actions">
+          <button class="primary-btn" onclick="downloadCurrentFile()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            <span id="downloadBtnText">Download analysis_summary.md</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    let isDark = false;
+    let currentFileName = '';
+    let currentFileType = '';
+    let isViewerFullscreen = false;
+
+    function toggleTheme() {
+      isDark = !isDark;
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2400);
+    }
+
+    function copyCode(btn) {
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    }
+
+    // Thinking Accordion Expand / Collapse
+    function toggleThinking() {
+      const accordion = document.getElementById('thinkingAccordion');
+      accordion.classList.toggle('expanded');
+    }
+
+    // 7-Line Sliding Window Stream Simulation
+    const sampleThoughts = [
+      "1. Inbound query: evaluate backend file routes.",
+      "2. Reading backend/src/server.ts and verifying handlers.",
+      "3. Inspecting token verification for /files/raw route.",
+      "4. Testing ticket TTL of 60 seconds with expiry check.",
+      "5. Ensuring path traversal defense via resolveSafePath.",
+      "6. Confirming MIME type resolution for text/code/images.",
+      "7. Generating architecture summary report in markdown.",
+      "8. Verifying Playwright e2e test assertions for tickets.",
+      "9. Cleaning up temporary test fixtures from disk.",
+      "10. Formatting output files into .pig-output directory.",
+      "11. Preparing final answer with clickable file references.",
+      "12. All reasoning steps complete."
+    ];
+
+    let streamInterval = null;
+
+    function simulateStream() {
+      if (streamInterval) clearInterval(streamInterval);
+
+      const accordion = document.getElementById('thinkingAccordion');
+      const title = document.getElementById('thinkingTitle');
+      const dot = document.getElementById('thinkingPulseDot');
+      const container = document.getElementById('thinkingLinesContainer');
+
+      accordion.classList.add('expanded', 'streaming');
+      dot.style.display = 'inline-block';
+      title.textContent = 'Thinking…';
+      container.innerHTML = '';
+
+      let idx = 0;
+      let seconds = 0.0;
+
+      streamInterval = setInterval(() => {
+        seconds += 0.4;
+        title.textContent = `Thinking… (${seconds.toFixed(1)}s)`;
+
+        if (idx < sampleThoughts.length) {
+          addThoughtLine(sampleThoughts[idx]);
+          idx++;
+        } else {
+          clearInterval(streamInterval);
+          streamInterval = null;
+          dot.style.display = 'none';
+          accordion.classList.remove('streaming');
+          title.textContent = `Thought for ${seconds.toFixed(1)}s`;
+
+          // Auto-collapse when answer starts
+          setTimeout(() => {
+            accordion.classList.remove('expanded');
+            showToast('Thinking auto-collapsed as answer started');
+          }, 350);
+        }
+      }, 400);
+    }
+
+    function highlightThought(text) {
+      // Syntax highlighting for thoughts:
+      // 1. Action keywords (Inbound, Checking, Inspecting, Testing, etc.)
+      let res = text.replace(/^(#?\d+\.\s+)?(Inbound|Checking|Inspecting|Testing|Evaluating|Confirming|Emitted|Turn complete|Reading|Generating|Verifying|Cleaning|Formatting|Preparing|All reasoning steps complete)/g, (match, prefix, kw) => {
+        return (prefix || '') + `<span class="hl-kw">${kw}</span>`;
+      });
+      // 2. File paths (e.g., backend/src/server.ts, .pig-output, analysis_summary.md)
+      res = res.replace(/([\w/-]+\.(?:ts|js|md|png|json|html)|\.pig-output\/?)/g, '<span class="hl-path">$1</span>');
+      // 3. Numbers & durations (e.g., 60 seconds, 7 lines, 8787)
+      res = res.replace(/\b(\d+(?:\.\d+)?(?:s|ms|KB|MB|%)?)\b/g, '<span class="hl-num">$1</span>');
+      return res;
+    }
+
+    function addThoughtLine(text) {
+      const container = document.getElementById('thinkingLinesContainer');
+      const existingLines = container.querySelectorAll('.thought-line');
+
+      // Enforce rolling 7-line maximum: if 7 lines exist, slide out the oldest
+      if (existingLines.length >= 7) {
+        const oldest = existingLines[0];
+        oldest.classList.remove('active');
+        oldest.classList.add('leaving');
+        setTimeout(() => {
+          if (oldest.parentNode) oldest.parentNode.removeChild(oldest);
+        }, 180);
+      }
+
+      const newLine = document.createElement('div');
+      newLine.className = 'thought-line entering';
+      newLine.innerHTML = highlightThought(text);
+      container.appendChild(newLine);
+
+      // Trigger smooth entrance
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          newLine.classList.remove('entering');
+          newLine.classList.add('active');
+        });
+      });
+    }
+
+    // Composer input handling
+    function handleComposerInput(textarea) {
+      const val = textarea.value;
+      const rightSlot = document.getElementById('composerRightSlot');
+      const micBtn = document.getElementById('composerMicBtn');
+      const sendBtn = document.getElementById('composerSendBtn');
+
+      // Auto grow textarea
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+
+      if (val.trim().length > 0) {
+        micBtn.style.display = 'none';
+        sendBtn.style.display = 'flex';
+      } else {
+        micBtn.style.display = 'flex';
+        sendBtn.style.display = 'none';
+      }
+
+      if (val === '/') {
+        openSlashModal();
+      }
+    }
+
+    function handleSendMessage() {
+      const textarea = document.getElementById('composerInput');
+      const text = textarea.value.trim();
+      if (!text) return;
+      if (text.startsWith('/')) {
+        showToast(`Executed command: ${text}`);
+      } else {
+        showToast('Message sent to agent');
+      }
+      textarea.value = '';
+      textarea.style.height = '36px';
+      handleComposerInput(textarea);
+    }
+
+    // Slash Sheet Controls
+    function openSlashModal(preselect) {
+      document.getElementById('sheetOverlay').classList.add('active');
+      document.getElementById('slashSheet').style.display = 'flex';
+      document.getElementById('fileViewerSheet').style.display = 'none';
+      document.getElementById('commandsList').style.display = 'flex';
+      document.getElementById('modelPickerList').style.display = 'none';
+      document.getElementById('usageViewList').style.display = 'none';
+      document.getElementById('slashSheetTitle').textContent = 'Commands & Tools';
+      document.getElementById('slashSearchInput').value = '';
+
+      if (preselect === '/model') {
+        showModelPicker();
+      }
+    }
+
+    function closeAllSheets(e) {
+      if (e && e.target !== document.getElementById('sheetOverlay')) return;
+      document.getElementById('sheetOverlay').classList.remove('active');
+    }
+
+    function filterCommands(query) {
+      const items = document.querySelectorAll('#commandsList .command-item');
+      items.forEach(item => {
+        const text = item.textContent.toLowerCase();
+        item.style.display = text.includes(query.toLowerCase()) ? 'flex' : 'none';
+      });
+    }
+
+    function showModelPicker() {
+      document.getElementById('commandsList').style.display = 'none';
+      document.getElementById('modelPickerList').style.display = 'flex';
+      document.getElementById('slashSheetTitle').textContent = 'Choose AI Model';
+    }
+
+    function showUsageView() {
+      document.getElementById('commandsList').style.display = 'none';
+      document.getElementById('usageViewList').style.display = 'flex';
+      document.getElementById('slashSheetTitle').textContent = 'Session Usage';
+    }
+
+    function selectModel(name) {
+      document.getElementById('activeModelLabel').textContent = name.replace(' (Thinking)', '');
+      document.getElementById('commandModelCurrent').textContent = name.split(' ')[1] || name;
+      showToast(`Model switched to ${name}`);
+      closeAllSheets();
+    }
+
+    // File Viewer Sheet Controls
+    function openFileViewer(fileName, type) {
+      currentFileName = fileName;
+      currentFileType = type;
+
+      document.getElementById('sheetOverlay').classList.add('active');
+      document.getElementById('slashSheet').style.display = 'none';
+      document.getElementById('fileViewerSheet').style.display = 'flex';
+      document.getElementById('viewerFileName').textContent = fileName;
+      document.getElementById('downloadBtnText').textContent = `Download ${fileName}`;
+
+      const pill = document.getElementById('markdownPill');
+      const content = document.getElementById('viewerContentArea');
+
+      if (type === 'markdown') {
+        pill.style.display = 'inline-flex';
+        setMarkdownView('preview');
+      } else if (type === 'code') {
+        pill.style.display = 'none';
+        content.innerHTML = `<code>import { createServer } from 'node:http';\nimport { WebSocketServer } from 'ws';\n\nconst PORT = 8787;\nconsole.log('Bridge ready on port', PORT);</code>`;
+      } else if (type === 'image') {
+        pill.style.display = 'none';
+        content.innerHTML = `<div style="text-align:center; padding:40px 0; color:var(--ink-secondary);">[Image Lightbox Preview for ${fileName}]</div>`;
+      }
+
+      showToast(`Loaded ${fileName} on-demand`);
+    }
+
+    function setMarkdownView(mode) {
+      const btnP = document.getElementById('btnPreview');
+      const btnR = document.getElementById('btnRaw');
+      const content = document.getElementById('viewerContentArea');
+
+      if (mode === 'preview') {
+        btnP.classList.add('active');
+        btnR.classList.remove('active');
+        content.innerHTML = `<div style="font-family:var(--font-ui); font-size:13.5px;">
+          <h3 style="margin-bottom:8px;">Architecture Audit Summary</h3>
+          <p style="margin-bottom:8px;">• Backend HTTP file serving port: 8787</p>
+          <p style="margin-bottom:8px;">• Temporary ticket duration: 60 seconds</p>
+          <p>• Verified with headless browser E2E test suite.</p>
+        </div>`;
+      } else {
+        btnR.classList.add('active');
+        btnP.classList.remove('active');
+        content.innerHTML = `<pre># Architecture Audit Summary\n\n- Backend HTTP file serving port: 8787\n- Temporary ticket duration: 60 seconds\n- Verified with headless browser E2E test suite.</pre>`;
+      }
+    }
+
+    function toggleFullscreenViewer() {
+      isViewerFullscreen = !isViewerFullscreen;
+      document.getElementById('fileViewerSheet').classList.toggle('fullscreen', isViewerFullscreen);
+    }
+
+    function downloadCurrentFile() {
+      showToast(`Downloaded ${currentFileName} only (on-demand)`);
+    }
+  </script>
+</body>
+</html>

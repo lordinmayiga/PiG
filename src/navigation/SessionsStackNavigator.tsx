@@ -12,7 +12,11 @@ export type SessionsStackParamList = {
   // sessionId identifies which session's transcript to load — added when
   // SessionsScreen wired up tap-to-open navigation (Phase 4).
   Transcript: { sessionId: string };
-  FileExplorer: undefined;
+  // initialPath seeds the explorer's starting folder (e.g. the opening
+  // session's working directory) — optional so other call sites (a
+  // non-session-scoped entry point, if one is added) still fall through to
+  // FileExplorerScreen's own default.
+  FileExplorer: { initialPath?: string } | undefined;
 };
 
 const Stack = createNativeStackNavigator<SessionsStackParamList>();

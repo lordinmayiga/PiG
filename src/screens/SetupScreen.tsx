@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { saveBridgeCredentials } from '../secureStorage';
+import { saveOpenRouterKey } from '../storage';
 import { useTheme } from '../theme';
+import { useCrossFade } from '../theme/motion';
 import ConnectStep from './setup/ConnectStep';
 import ConnectingStep from './setup/ConnectingStep';
 import ResultStep from './setup/ResultStep';
 import OpenRouterStep from './setup/OpenRouterStep';
-import { emptyConnectForm, resolveOutcome, type ConnectFormState, type ConnectMode, type ConnectOutcome, type SetupStep } from './setup/types';
-
-/** Simulated pairing round-trip latency (no real network — Phase 6 wires the real one). */
-const MOCK_CONNECT_DELAY_MS = 1500;
+import { emptyConnectForm, type ConnectFormState, type ConnectOutcome, type SetupStep } from './setup/types';
+import { validateHost } from './setup/validateHost';
+import { BridgeClient, WebSocketTransport, bridgeUrlFromHost } from '../network/bridgeClient';
 
 interface SetupScreenProps {
   /**
@@ -28,28 +31,149 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
   const insets = useSafeAreaInsets();
 
   const [step, setStep] = useState<SetupStep>('connect');
-  const [mode, setMode] = useState<ConnectMode>('scan');
   const [form, setForm] = useState<ConnectFormState>(emptyConnectForm);
   const [tokenPanelExpanded, setTokenPanelExpanded] = useState(false);
   const [forcedOutcome, setForcedOutcome] = useState<ConnectOutcome | null>(null);
   const [outcome, setOutcome] = useState<ConnectOutcome>('success');
+  const [connectAck, setConnectAck] = useState(false);
 
-  const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeClientRef = useRef<BridgeClient | null>(null);
+  const timeoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
-      if (connectTimer.current) clearTimeout(connectTimer.current);
+      if (timeoutTimerRef.current) clearTimeout(timeoutTimerRef.current);
+      if (ackTimerRef.current) clearTimeout(ackTimerRef.current);
+      activeClientRef.current?.disconnect();
     };
   }, []);
 
-  const handleSubmit = () => {
+  const handleSubmit = (overrideForm?: ConnectFormState) => {
+    const hasValidOverride = Boolean(
+      overrideForm &&
+      typeof overrideForm === 'object' &&
+      typeof overrideForm.host === 'string' &&
+      typeof overrideForm.token === 'string'
+    );
+    const activeForm = hasValidOverride && overrideForm ? overrideForm : form;
+    if (hasValidOverride && overrideForm) {
+      setForm(overrideForm);
+    }
+
+    const rawHost = (activeForm.host ?? '').trim();
+    const token = (activeForm.token ?? '').trim();
+
+    if (!rawHost || !token) {
+      setOutcome('unreachable');
+      setStep('error');
+      return;
+    }
+
+    const hostValidation = validateHost(rawHost);
+    if (!hostValidation.valid && !forcedOutcome) {
+      console.warn('[PiG Setup] Invalid host rejected in handleSubmit:', rawHost, hostValidation.error);
+      setOutcome('unreachable');
+      setStep('error');
+      return;
+    }
+
+    const host = hostValidation.cleanHost ?? rawHost;
+
+    console.log('[PiG Setup] handleSubmit with host:', host, 'forcedOutcome:', forcedOutcome);
     setStep('connecting');
-    const resolved = resolveOutcome(form, forcedOutcome);
-    connectTimer.current = setTimeout(() => {
-      setOutcome(resolved);
-      setStep(resolved === 'success' ? 'success' : 'error');
-    }, MOCK_CONNECT_DELAY_MS);
+    setConnectAck(false);
+
+    if (forcedOutcome) {
+      setOutcome(forcedOutcome);
+      if (forcedOutcome === 'success') {
+        void saveBridgeCredentials({ host, token });
+        setConnectAck(true);
+        ackTimerRef.current = setTimeout(() => {
+          setStep('success');
+          setConnectAck(false);
+        }, 420);
+      } else {
+        setStep('error');
+      }
+      return;
+    }
+
+    // Connect using real BridgeClient
+    activeClientRef.current?.disconnect();
+    let client: BridgeClient;
+    try {
+      const transport = new WebSocketTransport(bridgeUrlFromHost(host));
+      client = new BridgeClient({ transport, token });
+      activeClientRef.current = client;
+    } catch {
+      setOutcome('unreachable');
+      setStep('error');
+      return;
+    }
+
+    let settled = false;
+    const finish = (resultOutcome: ConnectOutcome) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimerRef.current) {
+        clearTimeout(timeoutTimerRef.current);
+        timeoutTimerRef.current = null;
+      }
+      unsubStatus();
+      unsubError();
+      client.disconnect();
+      activeClientRef.current = null;
+
+      console.log('[PiG Setup] Connection outcome resolved:', resultOutcome);
+      setOutcome(resultOutcome);
+      if (resultOutcome === 'success') {
+        console.log('[PiG Setup] Saving bridge credentials to storage:', { host, token });
+        void saveBridgeCredentials({ host, token });
+        setConnectAck(true);
+        ackTimerRef.current = setTimeout(() => {
+          setStep('success');
+          setConnectAck(false);
+        }, 420);
+      } else {
+        setStep('error');
+      }
+    };
+
+    const unsubStatus = client.onConnectionStatus((status) => {
+      if (status === 'connected') {
+        finish('success');
+      }
+    });
+
+    const unsubError = client.onError((err) => {
+      if (err.code === 'bad_token') {
+        finish('invalid-token');
+      } else if (err.code === 'timeout') {
+        finish('timeout');
+      } else {
+        finish('unreachable');
+      }
+    });
+
+    timeoutTimerRef.current = setTimeout(() => {
+      finish('timeout');
+    }, 10000);
+
+    client.connect();
   };
+
+  const handleOpenRouterDone = async (apiKey: string | undefined) => {
+    console.log('[PiG Setup] handleOpenRouterDone called. API key provided:', Boolean(apiKey));
+    if (apiKey?.trim()) {
+      await saveOpenRouterKey(apiKey.trim());
+    }
+    console.log('[PiG Setup] Calling onSetupComplete(). Transitioning to Tabs...');
+    onSetupComplete();
+  };
+
+  // Cross-fades the whole step area (connect -> connecting -> result/openrouter).
+  const crossFadeStyle = useCrossFade(step);
 
   const handleTryAgain = () => {
     // Form state (host/token) is preserved — only the step changes back.
@@ -59,6 +183,9 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: colors.canvas }}
+      // See TranscriptScreen's KeyboardAvoidingView comment: Android already
+      // resizes via windowSoftInputMode="adjustResize", so "padding" is
+      // iOS-only here to avoid double-compensating and clipping content.
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView
@@ -73,11 +200,9 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={{ width: '100%', maxWidth: 420, alignSelf: 'center' }}>
+        <Animated.View style={[{ width: '100%', maxWidth: 420, alignSelf: 'center' }, crossFadeStyle]}>
           {step === 'connect' && (
             <ConnectStep
-              mode={mode}
-              onModeChange={setMode}
               form={form}
               onFormChange={setForm}
               tokenPanelExpanded={tokenPanelExpanded}
@@ -88,7 +213,7 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
             />
           )}
 
-          {step === 'connecting' && <ConnectingStep />}
+          {step === 'connecting' && <ConnectingStep ack={connectAck} />}
 
           {(step === 'success' || step === 'error') && (
             <ResultStep
@@ -99,8 +224,10 @@ export default function SetupScreen({ onSetupComplete }: SetupScreenProps) {
             />
           )}
 
-          {step === 'openrouter' && <OpenRouterStep onDone={() => onSetupComplete()} />}
-        </View>
+          {step === 'openrouter' && (
+            <OpenRouterStep savedHost={form.host.trim()} onDone={handleOpenRouterDone} />
+          )}
+        </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -112,3 +239,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 });
+

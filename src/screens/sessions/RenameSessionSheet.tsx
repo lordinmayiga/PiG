@@ -1,8 +1,10 @@
-import { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useRef, useState } from 'react';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '../../theme';
+import { useSheetMotion } from '../../theme/motion';
 import type { Session } from '../../types';
 
 export interface RenameSessionSheetProps {
@@ -15,11 +17,22 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
+  const inputRef = useRef<TextInput>(null);
+
+  // Per pig-keyboard-handling: focus after the sheet's slide-in animation
+  // instead of a bare `autoFocus`, which fires the keyboard at the same
+  // instant the sheet starts animating and fights that transition. Modal's
+  // `onShow` fires as the animation starts, so wait it out first — 300ms
+  // matches RN's default Modal slide duration.
+  const handleShow = () => {
+    setTimeout(() => inputRef.current?.focus(), 300);
+  };
 
   // Reset the draft each time the sheet transitions from closed to open —
   // setState during render rather than in an effect, per React's
   // "adjusting state when a prop changes" pattern.
   const isOpen = session !== null;
+  const { mounted, backdropStyle, sheetStyle } = useSheetMotion(isOpen);
   const [wasOpen, setWasOpen] = useState(isOpen);
   if (isOpen !== wasOpen) {
     setWasOpen(isOpen);
@@ -35,31 +48,36 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
   };
 
   return (
-    <Modal visible={session !== null} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable
-        style={[styles.backdrop, { backgroundColor: colors.scrim }]}
-        onPress={onClose}
-        accessibilityLabel="Close rename sheet"
-        accessibilityRole="button"
-      />
-      <View
-        style={[
-          styles.sheet,
-          {
+    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose} onShow={handleShow}>
+      <ReanimatedAnimated.View style={[styles.backdrop, backdropStyle]}>
+        <Pressable
+          style={[styles.backdrop, { backgroundColor: colors.scrim }]}
+          onPress={onClose}
+          accessibilityLabel="Close rename sheet"
+          accessibilityRole="button"
+        />
+      </ReanimatedAnimated.View>
+      <ReanimatedAnimated.View style={[styles.sheet, sheetStyle]}>
+        <KeyboardAvoidingView
+          // See TranscriptScreen's KeyboardAvoidingView comment: Android
+          // already resizes via windowSoftInputMode="adjustResize", so
+          // "padding" is iOS-only to avoid double-compensating and clipping
+          // the sheet's buttons off-screen.
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={{
             backgroundColor: colors.elevated,
             borderTopLeftRadius: radius.sheet,
             borderTopRightRadius: radius.sheet,
             padding: spacing.lg,
             paddingBottom: spacing.lg + insets.bottom,
-          },
-        ]}
-      >
+          }}
+        >
         <Text style={[typeScale.heading, { color: colors.ink }]}>Rename session</Text>
 
         <TextInput
+          ref={inputRef}
           value={name}
           onChangeText={setName}
-          autoFocus
           placeholder="Session name"
           placeholderTextColor={colors.inkPlaceholder}
           style={[
@@ -104,7 +122,8 @@ export default function RenameSessionSheet({ session, onClose, onSave }: RenameS
             </Text>
           </Pressable>
         </View>
-      </View>
+        </KeyboardAvoidingView>
+      </ReanimatedAnimated.View>
     </Modal>
   );
 }

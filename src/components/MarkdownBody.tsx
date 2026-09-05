@@ -4,6 +4,7 @@ import { Linking, StyleSheet, Text, View } from 'react-native';
 import { useTheme, type TextStyleToken } from '../theme';
 import { CodeBlock } from './CodeBlock';
 import { monoFontFallback, monoFontFamily, useMonoFont } from './monoFont';
+import { classifyLink, isLikelyFilePath, BARE_PATH_RE } from '../utils/fileLinkClassifier';
 
 // Hand-rolled minimal markdown renderer, not a library. Decision: PiG's
 // markdown surface is deliberately small — headings, bold/italic, inline
@@ -105,15 +106,32 @@ function parseMarkdown(content: string): Block[] {
   return blocks;
 }
 
-const INLINE_RE = /\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|\*([^*]+)\*|_([^_]+)_/g;
+// Same alternation as before, with one addition: a bare path/filename mention
+// (no markdown brackets), reusing fileLinkClassifier's BARE_PATH_RE so the
+// extension whitelist lives in one place. Starts with a word char, so it
+// can't collide with the other alternatives (**, `, [, *, _).
+const INLINE_RE = new RegExp(
+  '\\*\\*([^*]+)\\*\\*' + // 1: bold
+    '|`([^`]+)`' + // 2: inline code
+    '|\\[([^\\]]+)\\]\\(([^)]+)\\)' + // 3/4: [text](url)
+    `|(${BARE_PATH_RE.source})` + // 5: bare path, e.g. src/App.tsx
+    '|\\*([^*]+)\\*' + // 6: italic *x*
+    '|_([^_]+)_', // 7: italic _x_
+  'g',
+);
 
 interface InlineOpts {
   keyPrefix: string;
   style: TextStyleToken;
   color: string;
   accentColor: string;
+  /** Low-emphasis accent-tinted fill for the file-link pill — pig-color-system's `accentTint` token, not a hand-rolled `accent + 'NN'` alpha string. */
+  accentTint: string;
   codeBg: string;
   monoLoaded: boolean;
+  /** Called with a local filesystem path when a file-referencing link is
+   * tapped, instead of Linking.openURL — see fileLinkClassifier. */
+  onOpenFile?: (path: string) => void;
 }
 
 function renderInline(text: string, opts: InlineOpts): ReactNode[] {
@@ -127,7 +145,7 @@ function renderInline(text: string, opts: InlineOpts): ReactNode[] {
     if (match.index > lastIndex) {
       nodes.push(<Fragment key={`${opts.keyPrefix}-t${n++}`}>{text.slice(lastIndex, match.index)}</Fragment>);
     }
-    const [, bold, code, linkText, linkUrl, italicStar, italicUnderscore] = match;
+    const [, bold, code, linkText, linkUrl, barePath, italicStar, italicUnderscore] = match;
     if (bold !== undefined) {
       nodes.push(
         <Text key={`${opts.keyPrefix}-b${n++}`} style={{ fontFamily: opts.style.fontFamily, fontWeight: '600' }}>
@@ -149,17 +167,69 @@ function renderInline(text: string, opts: InlineOpts): ReactNode[] {
         </Text>,
       );
     } else if (linkText !== undefined) {
-      nodes.push(
-        <Text
-          key={`${opts.keyPrefix}-l${n++}`}
-          style={{ color: opts.accentColor, textDecorationLine: 'underline' }}
-          onPress={() => {
-            Linking.openURL(linkUrl).catch(() => {});
-          }}
-        >
-          {linkText}
-        </Text>,
-      );
+      const linkInfo = classifyLink(linkUrl);
+      if (linkInfo.isFileLink && opts.onOpenFile) {
+        // A local file reference (`file://…` or a bare relative path) —
+        // open it in the same FileViewerSheet attachment chips use, not an
+        // external browser. Styled as a path pill (accent tint + mono),
+        // matching ThoughtLine's old path-segment treatment and
+        // session_mockup.html's design.
+        nodes.push(
+          <Text
+            key={`${opts.keyPrefix}-fl${n++}`}
+            testID="markdown-file-link"
+            style={{
+              color: opts.accentColor,
+              backgroundColor: opts.accentTint,
+              fontFamily: opts.monoLoaded ? monoFontFamily.regular : monoFontFallback,
+              fontSize: opts.style.fontSize - 1,
+            }}
+            onPress={() => opts.onOpenFile!(linkInfo.path)}
+          >
+            {' '}
+            {linkText}
+            {' '}
+          </Text>,
+        );
+      } else {
+        nodes.push(
+          <Text
+            key={`${opts.keyPrefix}-l${n++}`}
+            style={{ color: opts.accentColor, textDecorationLine: 'underline' }}
+            onPress={() => {
+              Linking.openURL(linkUrl).catch(() => {});
+            }}
+          >
+            {linkText}
+          </Text>,
+        );
+      }
+    } else if (barePath !== undefined) {
+      // A bare filename/path mentioned in plain prose, no markdown brackets
+      // (e.g. "I edited src/App.tsx") — same file-link pill treatment as an
+      // explicit markdown link, minus the denylisted "Product.js" framework
+      // names BARE_PATH_RE's extension whitelist can't otherwise rule out.
+      if (opts.onOpenFile && isLikelyFilePath(barePath)) {
+        nodes.push(
+          <Text
+            key={`${opts.keyPrefix}-fp${n++}`}
+            testID="markdown-file-link"
+            style={{
+              color: opts.accentColor,
+              backgroundColor: opts.accentTint,
+              fontFamily: opts.monoLoaded ? monoFontFamily.regular : monoFontFallback,
+              fontSize: opts.style.fontSize - 1,
+            }}
+            onPress={() => opts.onOpenFile!(barePath)}
+          >
+            {' '}
+            {barePath}
+            {' '}
+          </Text>,
+        );
+      } else {
+        nodes.push(<Fragment key={`${opts.keyPrefix}-t${n++}`}>{barePath}</Fragment>);
+      }
     } else if (italicStar !== undefined || italicUnderscore !== undefined) {
       nodes.push(
         <Text key={`${opts.keyPrefix}-i${n++}`} style={{ fontStyle: 'italic' }}>
@@ -184,10 +254,15 @@ const HEADING_ROLE: Record<number, 'heading' | 'subheading' | 'bodyMedium'> = {
 
 interface MarkdownBodyProps {
   content: string;
+  /** Opens a local file (from a file-referencing link) in FileViewerSheet
+   * instead of the default Linking.openURL behavior. Omit to render every
+   * link as a plain external one (e.g. inside FileViewerSheet's own markdown
+   * preview, where there's no viewer-within-a-viewer). */
+  onOpenFile?: (path: string) => void;
 }
 
 /** Renders agent-turn markdown per pig-markdown-rendering: rich for agent turns only. */
-export function MarkdownBody({ content }: MarkdownBodyProps) {
+export function MarkdownBody({ content, onOpenFile }: MarkdownBodyProps) {
   const { colors, typeScale, spacing } = useTheme();
   const monoLoaded = useMonoFont();
   const blocks = parseMarkdown(content);
@@ -208,8 +283,10 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                 style: typeScale[role],
                 color: colors.ink,
                 accentColor: colors.accent,
-                codeBg: colors.neutral[100],
+                accentTint: colors.accentTint,
+                codeBg: colors.card,
                 monoLoaded,
+                onOpenFile,
               })}
             </Text>
           );
@@ -226,8 +303,10 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                   style: typeScale.body,
                   color: colors.inkSecondary,
                   accentColor: colors.accent,
-                  codeBg: colors.neutral[100],
+                  accentTint: colors.accentTint,
+                  codeBg: colors.card,
                   monoLoaded,
+                  onOpenFile,
                 })}
               </Text>
             </View>
@@ -247,8 +326,10 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                       style: typeScale.body,
                       color: colors.ink,
                       accentColor: colors.accent,
-                      codeBg: colors.neutral[100],
+                      accentTint: colors.accentTint,
+                      codeBg: colors.card,
                       monoLoaded,
+                      onOpenFile,
                     })}
                   </Text>
                 </View>
@@ -263,8 +344,10 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
               style: typeScale.body,
               color: colors.ink,
               accentColor: colors.accent,
-              codeBg: colors.neutral[100],
+              accentTint: colors.accentTint,
+              codeBg: colors.card,
               monoLoaded,
+              onOpenFile,
             })}
           </Text>
         );

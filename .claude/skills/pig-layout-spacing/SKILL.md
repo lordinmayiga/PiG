@@ -19,3 +19,11 @@ description: Use when laying out any PiG screen or component — spacing, corner
   - Any element pinned to the **top** — a screen header, a status/offline banner — does the same with `insets.top`.
   - **Verify at more than one device profile**: a phone with 3-button nav (small bottom inset) *and* one with gesture nav (larger bottom inset, and some have a punch-hole/curved-edge top inset). A layout that only works on one profile has failed this rule.
   - This applies to a browser-based mockup/prototype too, not just the real RN build: size the mockup's chrome against `env(safe-area-inset-*)` (or, for a synthetic device frame drawn in CSS, make sure the *whole frame* — including anything pinned to its bottom edge — is verified to actually fit inside the real viewport it's opened in, at the size it's rendered).
+
+## Cross-skill guardrails
+
+**Non-negotiable.** Every `pig-*` skill's rules are mandatory, not advisory. Violating one — for a deadline, because a screen "looks better" without it, as a "temporary" exception, because the violation is small — is never acceptable. Do not ship code, a mockup, or a skill edit that contradicts any `pig-*` skill. If two skills genuinely conflict, stop and raise it before writing code either way — silently picking one skill over another is exactly the failure mode this rule exists to prevent.
+
+- Every layout decision here must also satisfy the other `pig-*` skills — never trade a spacing/radius/touch-target rule off against another skill to make one screen work; a perceived conflict is a bug in the skills to raise, not a license to violate either. (This is the authoritative touch-target figure — **48dp** — if another skill states a different number, that skill is wrong and should be fixed to match this one.)
+- **No emojis anywhere in the app.**
+- **Icons are always `lucide-react-native`** via the shared `Icon` component, sized from the 16/20/24 scale in `pig-icons-branding`.

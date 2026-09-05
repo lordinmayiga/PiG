@@ -1,0 +1,34 @@
+---
+name: pig-keyboard-handling
+description: Use when adding, reviewing, or fixing any text input in PiG — the composer, a bottom sheet's fields, Settings' key editor — so it responds correctly to the keyboard opening and closing.
+---
+
+# PiG keyboard handling
+
+Related: `pig-layout-spacing`'s safe-area rules apply the same "read the real inset, don't hardcode padding" discipline — the keyboard adds a second, *dynamic* inset on top of the static safe-area one, and the two must not be applied naively at the same time (see the collapse rule below).
+
+- **Android does NOT resize the window on its own here — `edgeToEdgeEnabled=true` breaks `adjustResize`.** `android/gradle.properties` sets `edgeToEdgeEnabled=true` (mandatory as of Expo SDK 57 / Android 16 targeting — see AGENTS.md's "Expo HAS CHANGED" note). `AndroidManifest.xml` still sets `windowSoftInputMode="adjustResize"`, but under edge-to-edge that no longer auto-resizes the window when the keyboard opens — the app's window *is* the whole screen, so there's no boundary for the OS to shrink. This is confirmed by Expo's own edge-to-edge migration docs: "This mode changes how Android handles keyboards. Like on iOS, you'll need to use `KeyboardAvoidingView` or — ideally — `react-native-keyboard-controller`." So Android needs the same explicit handling as iOS now.
+- **Every `KeyboardAvoidingView` in the app — Android included — gets `behavior="padding"` unconditionally.** Do NOT special-case Android to `undefined` or skip `KeyboardAvoidingView` there; that was correct pre-edge-to-edge and is now the exact bug that leaves inputs uncovered by the keyboard on Android. Don't invent a `Platform.OS` split here — every current instance (`TranscriptScreen`, `SetupScreen`, `NewSessionSheet`, `RenameSessionSheet`) uses plain `behavior="padding"` with no platform check; copy that.
+- **Every screen or sheet with a `TextInput` needs its own keyboard handling — it is not inherited from the screen behind it.** In particular: a `Modal`-based sheet (`NewSessionSheet`, `RenameSessionSheet`, any future one) opens in its own native window/surface and does **not** automatically get the parent screen's `KeyboardAvoidingView` behavior. Wrap the Modal's inner content in its own `KeyboardAvoidingView` with `behavior="padding"` — don't assume a sheet is fine just because the screen under it is.
+- **If `edgeToEdgeEnabled` is ever turned off**, revisit this file — the calculus above (and the resulting `behavior="padding"` everywhere) is a direct consequence of edge-to-edge being on, not a platform-independent truth.
+- **A bottom-pinned input's safe-area inset must collapse while the keyboard is open, not stack on top of it.** `insets.bottom` (home indicator / gesture bar) and the keyboard's own height both push content up from the screen's bottom edge; applying both at once leaves a dead gap between the input and the keyboard. Track keyboard visibility (`Keyboard.addListener('keyboardDidShow' / 'keyboardDidHide')`, or a small shared `useKeyboardVisible()` hook) and only reserve the bottom-inset space while the keyboard is **not** visible — e.g. a sibling `<View style={{ height: keyboardVisible ? 0 : insets.bottom }} />` rendered after the composer, not baked unconditionally into the composer's own padding.
+- **`keyboardShouldPersistTaps="handled"` on any scrollable list that sits next to a focused input.** The default (`"never"`) swallows the *first* tap on anything inside that list — a code block's Copy button, a file chip — while the keyboard is up; the tap just dismisses the keyboard instead of firing, and the user has to tap twice. `SetupScreen` already sets this correctly.
+- **Multiline composers never submit on Enter.** Enter must insert a newline (RN's default `multiline` behavior) — don't wire `onSubmitEditing` / `returnKeyType="send"` onto the message composer; Send stays a deliberate button tap.
+- **Avoid bare `autoFocus` on a `TextInput` inside an animating sheet** (`animationType="slide"` / `"fade"`). Firing the keyboard the same instant the sheet is still animating in fights the sheet's own transition and can leave the field mispositioned once both animations settle. If a field should focus automatically, focus it via a ref from the sheet's `onShow`/animation-complete callback instead of the `autoFocus` prop.
+- **Verify on both Android nav styles** (3-button vs. gesture), same as the layout-spacing rule — the keyboard/safe-area dead-gap bug above is invisible on 3-button nav (small inset) and obvious on gesture nav (large inset).
+
+## Fixed 2026-09-02: Android inputs weren't pushed up by the keyboard at all
+
+Root cause was the `behavior={Platform.OS === 'ios' ? 'padding' : undefined}` pattern this file used to prescribe (see git history) — correct before `edgeToEdgeEnabled` was turned on, silently broken after. Every `KeyboardAvoidingView` in the app (`TranscriptScreen`, `SetupScreen`, `NewSessionSheet`, `RenameSessionSheet`) was passing `undefined` on Android, i.e. doing nothing, while `adjustResize` — the thing that pattern was trusting to do the work — had stopped resizing the window under edge-to-edge. Fixed by switching all four to unconditional `behavior="padding"`; see the rules above.
+
+The previously-listed gaps (`Composer.tsx` insets handling, `TranscriptScreen`'s `FlatList` missing `keyboardShouldPersistTaps`, the sheets missing `KeyboardAvoidingView`) were already fixed by the time of this pass — the rules above describe the current, correct state, not open gaps.
+
+**Recheck 2026-09-04**: `TranscriptScreen.tsx` currently has `behavior={Platform.OS === 'ios' ? 'padding' : undefined}` again, with a comment claiming `adjustResize` handles Android — that's exactly the reverted, pre-edge-to-edge pattern this file documents as broken above. Flagging here since it directly contradicts this skill's "unconditionally `behavior=\"padding\"`" rule; needs the same fix as the 2026-09-02 pass, not a new one.
+
+## Cross-skill guardrails
+
+**Non-negotiable.** Every `pig-*` skill's rules are mandatory, not advisory. Violating one — for a deadline, because a screen "looks better" without it, as a "temporary" exception, because the violation is small — is never acceptable. Do not ship code, a mockup, or a skill edit that contradicts any `pig-*` skill. If two skills genuinely conflict, stop and raise it before writing code either way — silently picking one skill over another is exactly the failure mode this rule exists to prevent.
+
+- Every keyboard-handling decision here must also satisfy the other `pig-*` skills — never trade this skill's rules off against another to make one screen work; a perceived conflict is a bug in the skills to raise, not a license to violate either.
+- **No emojis anywhere in the app**, including as placeholder/hint glyphs in an input.
+- **Icons are always `lucide-react-native`** for any icon inside or beside a text input (send, mic, clear).

@@ -49,7 +49,13 @@ export default function ResultStep({ outcome, host, onContinue, onTryAgain }: Re
             Paired with {host}.
           </Text>
         </View>
-        <PrimaryButton label="Continue" onPress={onContinue} />
+        <PrimaryButton
+          label="Continue"
+          onPress={() => {
+            console.log('[PiG Button] "Continue" clicked on ResultStep. Host:', host);
+            onContinue();
+          }}
+        />
       </View>
     );
   }
@@ -70,7 +76,13 @@ export default function ResultStep({ outcome, host, onContinue, onTryAgain }: Re
           {copy.body(host)}
         </Text>
       </View>
-      <PrimaryButton label="Try again" onPress={onTryAgain} />
+      <PrimaryButton
+        label="Try again"
+        onPress={() => {
+          console.log('[PiG Button] "Try again" clicked on ResultStep after outcome:', outcome);
+          onTryAgain();
+        }}
+      />
     </View>
   );
 }

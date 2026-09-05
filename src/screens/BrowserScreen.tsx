@@ -1,13 +1,16 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Globe, Monitor, RefreshCw, RotateCcw, Smartphone, Trash2 } from 'lucide-react-native';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import type { WebViewNavigation } from 'react-native-webview';
+import type { WebViewProgressEvent } from 'react-native-webview/lib/WebViewTypes';
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
 import { TabStrip } from '../components/TabStrip';
 import { createBlankTab, DESKTOP_USER_AGENT, type BrowserTab } from '../fixtures/browser';
 import { useTheme } from '../theme';
+import { isReduceMotionEnabled } from '../theme/motion';
 import { Icon, iconSizes } from '../theme/icons';
 
 /**
@@ -21,14 +24,66 @@ import { Icon, iconSizes } from '../theme/icons';
  * available in this sandbox, so it won't visibly load pages while testing
  * here — the tab/control state management is verified independent of that.
  */
-export default function BrowserScreen() {
+interface BrowserScreenProps {
+  route?: {
+    params?: {
+      initialUrl?: string;
+    };
+  };
+}
+
+export default function BrowserScreen({ route }: BrowserScreenProps = {}) {
   const { colors, spacing, radius, typeScale, screenMargin, maxFontScale, minTouchTarget } = useTheme();
 
   const [tabs, setTabs] = useState<BrowserTab[]>(() => [createBlankTab()]);
   const [activeTabId, setActiveTabId] = useState(tabs[0].id);
   const webviewRefs = useRef<Record<string, WebView | null>>({});
+  const lastOpenedUrl = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    const targetUrl = route?.params?.initialUrl;
+    if (targetUrl && targetUrl !== lastOpenedUrl.current) {
+      lastOpenedUrl.current = targetUrl;
+      setTabs((prev) => {
+        const active = prev.find((t) => t.id === activeTabId);
+        if (active && (active.url === 'about:blank' || !active.addressDraft)) {
+          return prev.map((t) =>
+            t.id === activeTabId ? { ...t, url: targetUrl, addressDraft: targetUrl, title: targetUrl } : t,
+          );
+        }
+        const fresh = { ...createBlankTab(), url: targetUrl, addressDraft: targetUrl, title: targetUrl };
+        setActiveTabId(fresh.id);
+        return [...prev, fresh];
+      });
+    }
+  }, [route?.params?.initialUrl, activeTabId]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+
+  const loadProgress = useSharedValue(0);
+  const loadProgressOpacity = useSharedValue(0);
+
+  const handleLoadProgress = (id: string, event: WebViewProgressEvent) => {
+    if (id !== activeTabId) return;
+    const progress = event.nativeEvent.progress;
+    if (isReduceMotionEnabled()) {
+      loadProgress.value = progress;
+    } else {
+      loadProgress.value = withTiming(progress, { duration: 150, easing: Easing.out(Easing.cubic) });
+    }
+    loadProgressOpacity.value = progress >= 1 ? withTiming(0, { duration: 220 }) : 1;
+  };
+
+  const progressBarStyle = useAnimatedStyle(() => ({
+    width: `${loadProgress.value * 100}%`,
+    opacity: loadProgressOpacity.value,
+  }));
+
+  useEffect(() => {
+    loadProgress.value = 0;
+    loadProgressOpacity.value = 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId]);
 
   const updateTab = (id: string, patch: Partial<BrowserTab>) => {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -158,6 +213,10 @@ export default function BrowserScreen() {
         </Pressable>
       </View>
 
+      <View style={styles.progressTrack}>
+        <Animated.View style={[styles.progressBar, progressBarStyle, { backgroundColor: colors.accent }]} />
+      </View>
+
       <View
         style={[
           styles.controlsRow,
@@ -206,6 +265,7 @@ export default function BrowserScreen() {
                 source={{ uri: tab.url }}
                 userAgent={tab.uaMode === 'desktop' ? DESKTOP_USER_AGENT : undefined}
                 onNavigationStateChange={(nav) => handleNavigationStateChange(tab.id, nav)}
+                onLoadProgress={(event) => handleLoadProgress(tab.id, event)}
                 style={{ backgroundColor: colors.canvas }}
               />
             </View>
@@ -288,6 +348,13 @@ const styles = StyleSheet.create({
   controlsRow: {
     flexDirection: 'row',
     borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  progressTrack: {
+    height: 2,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: 2,
   },
   controlButton: {
     alignItems: 'center',

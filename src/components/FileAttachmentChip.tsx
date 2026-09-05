@@ -35,7 +35,7 @@ export function FileAttachmentChip({ attachment, onPress }: FileAttachmentChipPr
       onPress={() => onPress(attachment)}
       accessibilityRole="button"
       accessibilityLabel={`Open ${attachment.name}`}
-      style={[styles.chip, { backgroundColor: colors.neutral[100], borderRadius: radius.chip, paddingHorizontal: spacing.sm }]}
+      style={[styles.chip, { backgroundColor: colors.card, borderRadius: radius.chip, paddingHorizontal: spacing.sm }]}
     >
       <Icon icon={iconFor(attachment.kind)} size={16} color={colors.inkSecondary} />
       <View style={{ marginLeft: spacing.xxs, flexShrink: 1 }}>

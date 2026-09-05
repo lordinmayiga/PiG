@@ -25,6 +25,7 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+*.log
 
 # macOS
 .DS_Store
@@ -36,6 +37,16 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
 # generated native folders
 /ios
 /android
+
+# backend transcript persistence (sessionRegistry.ts's JSONL log dir —
+# operational data, not source)
+/backend/data/

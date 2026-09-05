@@ -14,6 +14,12 @@ function dotColor(status: AgentTurnStatus, colors: Theme['colors']): string {
       return colors.accent;
     case 'error':
       return colors.destructive;
+    // Cut off mid-stream (connection dropped before `done: true`) reads as
+    // "unresolved", not "failed" — the turn may still be running
+    // server-side. Warning token, not destructive: distinct from both a
+    // finished turn (success) and a server-reported error.
+    case 'cutoff':
+      return colors.warning;
     case 'done':
     default:
       return colors.success;
@@ -22,7 +28,8 @@ function dotColor(status: AgentTurnStatus, colors: Theme['colors']): string {
 
 /**
  * Turn-header status dot (pig-loading-states / pig-motion): pulses only
- * while `streaming` — a "connected"/"done" dot never animates.
+ * while `streaming` — a "connected"/"done" dot (and a "cutoff" one — it isn't
+ * actively streaming anymore) never animates.
  */
 export function AgentStatusDot({ status }: AgentStatusDotProps) {
   const theme = useTheme();

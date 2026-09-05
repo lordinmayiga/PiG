@@ -1,12 +1,14 @@
 import { useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import ReanimatedAnimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Plus } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
-import { mockSessions, emptySessions } from '../fixtures/sessions';
+import { useScaleIn, usePressScale } from '../theme/motion';
+import { useSessions } from '../contexts/SessionsContext';
 import type { Session } from '../types';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
 import SessionCard from './sessions/SessionCard';
@@ -14,38 +16,70 @@ import NewSessionSheet, { type NewSessionDraft } from './sessions/NewSessionShee
 import RenameSessionSheet from './sessions/RenameSessionSheet';
 import SessionActionMenu from './sessions/SessionActionMenu';
 
-// DEV VIEW DEFAULT: starts from `mockSessions` (the populated list) since
-// that's the more useful default for building/reviewing the card list and
-// its interactions. The genuine empty state (SPEC.md §3.7's handoff from
-// Setup) is reachable via the "Preview empty state" dev toggle below, or
-// naturally once every mock session has been killed.
-const DEV_START_FROM_EMPTY = false;
-
-let nextSessionSeq = 1;
+const DEV_DUMMY_SESSIONS: Session[] = [
+  {
+    id: 'dev-sample-1',
+    name: 'api-refactor',
+    agent: 'claude-code',
+    folder: '/root/projects/api',
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
+    lastMessagePreview: 'Refactored auth endpoints.',
+  },
+];
 
 export default function SessionsScreen() {
   const { colors, spacing, radius, typeScale, minTouchTarget, screenMargin } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<SessionsStackParamList, 'Sessions'>>();
 
-  const [sessions, setSessions] = useState<Session[]>(DEV_START_FROM_EMPTY ? emptySessions : mockSessions);
+  const {
+    sessions,
+    createSession,
+    killSession,
+    renameSession: renameSessionBridge,
+    removeSessionLocally,
+    renameSessionLocally,
+    setSessionsLocally,
+  } = useSessions();
+
   const [isNewSessionVisible, setNewSessionVisible] = useState(false);
   const [menuSession, setMenuSession] = useState<Session | null>(null);
   const [renameSession, setRenameSession] = useState<Session | null>(null);
+  // Session whose kill has been confirmed but whose row-collapse animation
+  // (SessionCard's useCollapseOnRemove) hasn't settled yet — the session
+  // is only actually removed from `sessions` once that animation completes.
+  const [killingSessionId, setKillingSessionId] = useState<string | null>(null);
+
+  const fabScaleStyle = useScaleIn();
+  const { style: fabPressStyle, pressProps: fabPressProps } = usePressScale();
 
   const openTranscript = (session: Session) => {
     navigation.navigate('Transcript', { sessionId: session.id });
   };
 
   const requestKill = (session: Session) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      if (window.confirm('Kill this session? This stops the agent and closes the session. Anything not saved elsewhere will be lost.')) {
+        setKillingSessionId(session.id);
+      }
+      return;
+    }
     Alert.alert('Kill this session?', 'This stops the agent and closes the session. Anything not saved elsewhere will be lost.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Kill session',
         style: 'destructive',
-        onPress: () => setSessions((prev) => prev.filter((s) => s.id !== session.id)),
+        onPress: () => setKillingSessionId(session.id),
       },
     ]);
+  };
+
+  const handleKillAnimationComplete = (sessionId: string) => {
+    removeSessionLocally(sessionId);
+    void killSession(sessionId);
+    setKillingSessionId((current) => (current === sessionId ? null : current));
   };
 
   const handleMenuKill = (session: Session) => {
@@ -59,24 +93,15 @@ export default function SessionsScreen() {
   };
 
   const handleRenameSave = (session: Session, newName: string) => {
-    setSessions((prev) => prev.map((s) => (s.id === session.id ? { ...s, name: newName } : s)));
+    renameSessionLocally(session.id, newName);
+    void renameSessionBridge(session.id, newName);
     setRenameSession(null);
   };
 
   const handleCreateSession = (draft: NewSessionDraft) => {
-    const now = new Date().toISOString();
-    const newSession: Session = {
-      id: `sess-new-${nextSessionSeq++}`,
-      name: draft.name,
-      agent: draft.agent,
-      folder: draft.folder,
-      status: 'active',
-      createdAt: now,
-      lastActivityAt: now,
-      lastMessagePreview: 'Session started — no messages yet.',
-    };
-    setSessions((prev) => [newSession, ...prev]);
     setNewSessionVisible(false);
+    void createSession(draft.name, draft.folder);
+    navigation.navigate('Transcript', { sessionId: draft.name });
   };
 
   const isEmpty = sessions.length === 0;
@@ -87,7 +112,7 @@ export default function SessionsScreen() {
         <Text style={[typeScale.title, { color: colors.ink }]}>Sessions</Text>
         {__DEV__ && (
           <Pressable
-            onPress={() => setSessions((prev) => (prev.length === 0 ? mockSessions : emptySessions))}
+            onPress={() => setSessionsLocally(sessions.length === 0 ? DEV_DUMMY_SESSIONS : [])}
             accessibilityRole="button"
             accessibilityLabel="Toggle empty state preview"
           >
@@ -100,8 +125,14 @@ export default function SessionsScreen() {
 
       {isEmpty ? (
         <View style={[styles.emptyState, { paddingHorizontal: screenMargin }]}>
-          <Text style={[typeScale.heading, { color: colors.ink, textAlign: 'center' }]}>
-            No sessions yet — tap + to start your first session.
+          <Text style={[typeScale.heading, { color: colors.ink, textAlign: 'center' }]} maxFontSizeMultiplier={1.3}>
+            No sessions yet
+          </Text>
+          <Text
+            style={[typeScale.body, { color: colors.inkSecondary, textAlign: 'center', marginTop: spacing.xs }]}
+            maxFontSizeMultiplier={1.3}
+          >
+            Start one to begin working with an agent on your VPS.
           </Text>
           <Pressable
             onPress={() => setNewSessionVisible(true)}
@@ -118,8 +149,19 @@ export default function SessionsScreen() {
               },
             ]}
           >
-            <Text style={[typeScale.bodyMedium, { color: colors.onAccent }]}>New session</Text>
+            <Text style={[typeScale.bodyMedium, { color: colors.onAccent }]} maxFontSizeMultiplier={1.3}>
+              New session
+            </Text>
           </Pressable>
+          <Text
+            style={[
+              typeScale.caption,
+              { color: colors.inkPlaceholder, textAlign: 'center', marginTop: spacing.md, maxWidth: 280 },
+            ]}
+            maxFontSizeMultiplier={1.3}
+          >
+            Sessions persist in tmux even if the app closes or disconnects.
+          </Text>
         </View>
       ) : (
         <FlatList
@@ -132,6 +174,8 @@ export default function SessionsScreen() {
               onPress={openTranscript}
               onOpenMenu={setMenuSession}
               onSwipeKill={requestKill}
+              isKilling={item.id === killingSessionId}
+              onKillAnimationComplete={handleKillAnimationComplete}
             />
           )}
           contentContainerStyle={{
@@ -143,22 +187,29 @@ export default function SessionsScreen() {
         />
       )}
 
-      <Pressable
-        onPress={() => setNewSessionVisible(true)}
-        accessibilityRole="button"
-        accessibilityLabel="New session"
-        style={[
-          styles.fab,
-          {
-            backgroundColor: colors.accent,
-            borderRadius: radius.pill,
-            right: screenMargin,
-            bottom: spacing.lg + insets.bottom,
-          },
-        ]}
-      >
-        <Icon icon={Plus} size={24} color={colors.onAccent} />
-      </Pressable>
+      {!isEmpty && (
+        <ReanimatedAnimated.View
+          style={[
+            styles.fabWrapper,
+            { right: screenMargin, bottom: spacing.lg + insets.bottom },
+            fabScaleStyle,
+          ]}
+        >
+          <Pressable
+            onPress={() => setNewSessionVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="New session"
+            style={styles.fabPressable}
+            {...fabPressProps}
+          >
+            <ReanimatedAnimated.View
+              style={[styles.fab, { backgroundColor: colors.accent, borderRadius: radius.pill }, fabPressStyle]}
+            >
+              <Icon icon={Plus} size={24} color={colors.onAccent} />
+            </ReanimatedAnimated.View>
+          </Pressable>
+        </ReanimatedAnimated.View>
+      )}
 
       <NewSessionSheet
         visible={isNewSessionVisible}
@@ -194,10 +245,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  fab: {
+  fabWrapper: {
     position: 'absolute',
     width: 56,
     height: 56,
+  },
+  fabPressable: {
+    width: '100%',
+    height: '100%',
+  },
+  fab: {
+    width: '100%',
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',

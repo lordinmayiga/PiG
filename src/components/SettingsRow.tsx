@@ -1,9 +1,12 @@
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 
 import { useTheme } from '../theme';
 import type { LucideIconComponent } from '../theme/icons';
 import { Icon } from '../theme/icons';
+import { usePressScale } from '../theme/motion';
+import { DISABLED_OPACITY } from '../theme/interaction';
 
 interface SettingsRowProps {
   icon: LucideIconComponent;
@@ -23,20 +26,24 @@ interface SettingsRowProps {
  */
 export function SettingsRow({ icon, label, value, trailing, onPress, disabled }: SettingsRowProps) {
   const { colors, spacing, typeScale, minTouchTarget, fontFamily, maxFontScale } = useTheme();
+  const { style: pressStyle, pressProps } = usePressScale();
 
+  // Disabled is opacity-only per pig-interaction-states — never swap to a
+  // separate hardcoded gray for icon/label (that's the "unvalidated color"
+  // pig-color-system warns against), and disabled rows skip press feedback
+  // entirely rather than scale-and-bounce-back on a tap that no-ops.
   const content = (
-    <View style={[styles.row, { minHeight: minTouchTarget, paddingVertical: spacing.sm, gap: spacing.sm }]}>
+    <View
+      style={[
+        styles.row,
+        { minHeight: minTouchTarget, paddingVertical: spacing.sm, gap: spacing.sm, opacity: disabled ? DISABLED_OPACITY : 1 },
+      ]}
+    >
       <View style={styles.iconSlot}>
-        <Icon icon={icon} color={disabled ? colors.inkPlaceholder : colors.inkSecondary} />
+        <Icon icon={icon} color={colors.inkSecondary} />
       </View>
       <View style={styles.textSlot}>
-        <Text
-          maxFontSizeMultiplier={maxFontScale}
-          style={[
-            typeScale.bodyMedium,
-            { color: disabled ? colors.inkPlaceholder : colors.ink, fontFamily: fontFamily.medium },
-          ]}
-        >
+        <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.bodyMedium, { color: colors.ink, fontFamily: fontFamily.medium }]}>
           {label}
         </Text>
         {value ? (
@@ -63,9 +70,10 @@ export function SettingsRow({ icon, label, value, trailing, onPress, disabled }:
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={label}
-      style={({ pressed }) => [pressed && !disabled ? { opacity: 0.6 } : null]}
+      accessibilityState={{ disabled: Boolean(disabled) }}
+      {...(disabled ? {} : pressProps)}
     >
-      {content}
+      <Animated.View style={disabled ? undefined : pressStyle}>{content}</Animated.View>
     </Pressable>
   );
 }
