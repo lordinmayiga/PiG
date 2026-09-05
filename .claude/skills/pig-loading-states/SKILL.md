@@ -12,7 +12,8 @@ Decision rule — apply this instead of picking ad hoc per screen:
 - **Skeleton**: content shape is already known AND load is likely >500ms. Examples: Sessions grid first load, transcript scrollback resync after a long absence.
 - **Spinner**: duration is short/unknown AND there's no content shape to preview. Examples: app cold-start / VPS handshake, action-confirmation round-trips.
 - **Typing indicator** (not a generic spinner): specifically while awaiting the agent's first streamed response chunk — matches the chat framing better than a spinner.
-- **300ms delay-before-show**: never render a loader (of any of the three kinds above) until 300ms has passed since the operation started, to avoid a flash of skeleton/spinner on fast loads.
+- **Determinate progress** (a filled bar/ring, not a spinner): the operation reports real byte/percent progress AND total size is known up front. Examples: a chunked file download in the File Explorer viewer (size comes from the folder listing before the tap), an attachment upload. If either half is missing — no known total, or the transport can't report progress — that's still a spinner, not a fake/simulated determinate fill.
+- **300ms delay-before-show**: never render a loader (of any of the four kinds above) until 300ms has passed since the operation started, to avoid a flash of skeleton/spinner/progress on fast loads.
 
 ## Cross-skill guardrails
 

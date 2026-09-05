@@ -133,13 +133,30 @@ async function handleHello(ws: WebSocket, envelope: Envelope<HelloPayload>): Pro
 
 async function handleResyncRequest(ws: WebSocket, envelope: Envelope<ResyncRequestPayload>): Promise<void> {
   const sessions = await listTmuxSessions();
-  // Per-session transcript resync (payload.sessionId set) now reads
-  // sessionRegistry.ts's live, in-memory transcript (populated by
-  // handleRouteInput's agent spawn below). `undefined` (not `[]`) when the
-  // registry has never seen this session — matches getTranscript's contract
-  // and lets the client fall back to its own cache rather than treating an
-  // unknown session as "confirmed empty".
+  // Per-session transcript resync (payload.sessionId set) reads
+  // sessionRegistry.ts's live, in-memory transcript. That transcript is
+  // only ever *seeded* from the on-disk JSONL log inside
+  // getOrCreateSession() — a plain `getTranscript` (bare Map lookup) misses
+  // a session this backend process hasn't spawned a turn for yet, even
+  // though a prior process may have persisted real history for it. Without
+  // this, reopening a session after a backend restart (redeploy, VPS
+  // reboot, crash) came back with an empty transcript until the user sent a
+  // *new* message — real history sat unread on disk. Resolving the tmux
+  // session first (same lookup spawnAndStreamTurn already does) and running
+  // it through getOrCreateSession — a no-op if the registry already has
+  // this session live — guarantees the JSONL seed happens on resync too,
+  // not only on the next prompt.
   const requestedSessionId = envelope.payload.sessionId;
+  if (requestedSessionId) {
+    const tmuxSession = sessions.find((s) => s.id === requestedSessionId || s.name === requestedSessionId);
+    if (tmuxSession) {
+      getOrCreateSession(requestedSessionId, tmuxSession.folder, tmuxSession.agent);
+    }
+  }
+  // `undefined` (not `[]`) when the session matches no live tmux session at
+  // all — matches getTranscript's contract and lets the client fall back to
+  // its own cache rather than treating an unknown session as "confirmed
+  // empty".
   const transcript = requestedSessionId ? getTranscript(requestedSessionId) : undefined;
   const payload: ResyncSnapshotPayload = {
     sessions,

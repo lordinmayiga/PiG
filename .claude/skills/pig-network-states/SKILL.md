@@ -14,6 +14,15 @@ Every action that crosses the network (composer send, kill session, resync, Setu
 | **Failed** | Response confirms it didn't work | Inline error at the site of the action (per `pig-screen-states`' error-placement rule) with a `Retry` action, per `pig-microcopy`'s error copy pattern. **Never silently drop the attempted action** — a failed message send stays visible in the transcript (with an error icon + Retry), it does not vanish as if never typed. |
 | **Unknown** | Request went out, then the connection dropped before any response arrived | This is the outcome every other skill under-specifies, and the one most likely to be mishandled. PiG's rule: **treat unknown the same as failed for the purposes of user-facing state** (show it as failed, with Retry) — never leave an action spinning indefinitely waiting for a response that may never come. Pair this with the "Reconnecting…" banner (`pig-microcopy`) so the user understands *why* it failed, not just that it did. |
 
+## Cancellation — a fifth, user-initiated outcome (orthogonal to the four above)
+
+Some pending actions have a meaningful window where the user can reasonably want out before either a real outcome arrives — a file download in the File Explorer viewer sheet, an attachment upload. That's the case this section covers; a quick round-trip (kill session, save a key) doesn't need a Cancel affordance just because pending-network-states exist for it.
+
+- **Cancel is always available, not a hidden gesture.** If the action can take a while, its pending state shows an explicit `Cancel`, not just an implicit "back out and hope it stops" (e.g. FileExplorerScreen closing the viewer sheet mid-load aborts the fetch behind it, rather than letting it finish unseen).
+- **Cancelling never blocks anything else.** Per `pig-network-states`' existing pending rule, the action's own trigger shows the loading state — the rest of the screen was never disabled by it, so there's nothing to "unfreeze" on cancel; cancel just stops that one thing.
+- **Cancelled is not Failed.** It gets no destructive styling, no error icon, no `Retry` — the user chose to stop, nothing went wrong. The UI returns to its pre-attempt resting state (the closed sheet, the un-sent draft) as if the action had simply not been started, not to a "this broke" state.
+- **A response that arrives after cancellation is discarded, not applied.** Matching each request by its own id (not by a shared key like a file path) is what makes this safe — see bridgeClient.ts's `fsRead`/`getRawFileUrl` for the pattern: a stale response for an abandoned request must never overwrite what the user has since done instead.
+
 ## Retry policy — answered, not left ambiguous
 
 - **Retry is always manual, never silent-automatic.** The user taps `Retry`; PiG does not re-send a failed/unknown action on its own without a tap, even after reconnecting — an auto-retry that succeeds *after* the user already moved on (typed something else, navigated away) is more confusing than a visible failed state waiting for them.

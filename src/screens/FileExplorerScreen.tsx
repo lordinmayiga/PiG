@@ -13,9 +13,20 @@ import { useBridge } from '../contexts/BridgeContext';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
 import type { FileNode } from '../types';
 import { FileViewerSheet, type ViewableFile } from '../components/FileViewerSheet';
+import { fetchTextChunked } from '../network/chunkedDownload';
 
 type Nav = NativeStackNavigationProp<SessionsStackParamList, 'FileExplorer'>;
 type ExplorerRoute = RouteProp<SessionsStackParamList, 'FileExplorer'>;
+
+/** Files over this size skip the automatic preview fetch entirely (Q2 of
+ * the file-explorer lazy-loading plan) — the sheet shows metadata +
+ * Download/Open-in-browser instead. The folder listing already carries
+ * `sizeBytes` for every entry, so this decision costs zero extra round
+ * trips: it's made before any fetch starts, not after one times out. */
+const MAX_AUTO_PREVIEW_BYTES = 10 * 1024 * 1024;
+
+/** Bytes requested per Range chunk when streaming a text/code file in — see chunkedDownload.ts. */
+const TEXT_CHUNK_SIZE = 64 * 1024;
 
 function parentPath(path: string): string {
   const segments = path.split('/');
@@ -71,15 +82,38 @@ export default function FileExplorerScreen() {
   const [fsEntries, setFsEntries] = useState<FileNode[]>([]);
   const [listError, setListError] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
+  // Flips true only 300ms into a folder fetch, per pig-loading-states'
+  // delay-before-show rule, so a fast listing never flashes a skeleton.
+  const [showListSkeleton, setShowListSkeleton] = useState(false);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
   const [imageLoading, setImageLoading] = useState(false);
   const [imageLoadFailed, setImageLoadFailed] = useState(false);
+  // Text-file open had no pending state at all before this — the sheet
+  // just showed a blank body until fsRead resolved, which is the "screen
+  // just kind of freezes" symptom for text/code files specifically.
+  const [textLoading, setTextLoading] = useState(false);
+  // 0-1 while later chunks are still streaming in behind the first one
+  // already on screen; undefined before the first chunk and once done.
+  const [textProgress, setTextProgress] = useState<number | undefined>(undefined);
+  const [textLoadError, setTextLoadError] = useState<string | null>(null);
+  // The node last opened for text preview, kept only so Retry can re-run
+  // the same load without the row being tapped again.
+  const lastTextNodeRef = useRef<FileNode | null>(null);
   const traverseStyle = useFolderTraverseSlide(currentPath, navDirection);
 
   const breadcrumbScrollRef = useRef<ScrollView>(null);
   const breadcrumbLayouts = useRef<Record<string, { x: number; width: number }>>({});
   const breadcrumbViewportWidth = useRef(0);
+  // Aborts whichever file-open request (fsRead/getRawFileUrl) is currently
+  // in flight for the viewer sheet — set on every handlePress, cleared/fired
+  // on close, on opening a different file, and on unmount. This is what
+  // makes "cancel a load without it blocking everything else" real: the
+  // explorer list, breadcrumbs and back button were already unblocked
+  // (nothing here runs on the UI thread), but without this the *response*
+  // to an abandoned open could still land later and overwrite whatever the
+  // user opened next (see bridgeClient.ts's WithRequestId doc).
+  const openFileAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +125,9 @@ export default function FileExplorerScreen() {
     // value the render could compute instead.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setListError(null);
+    const skeletonTimer = setTimeout(() => {
+      if (!cancelled) setShowListSkeleton(true);
+    }, 300);
     client
       .fsList(currentPath || undefined)
       .then((list) => {
@@ -110,11 +147,25 @@ export default function FileExplorerScreen() {
         // a failed listing must not be conflated with a genuinely empty
         // folder (pig-screen-states' partial/error rule).
         if (!cancelled) setListError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        clearTimeout(skeletonTimer);
+        setShowListSkeleton(false);
       });
     return () => {
       cancelled = true;
+      clearTimeout(skeletonTimer);
     };
   }, [client, currentPath, retryToken]);
+
+  // Cancel whatever file-open request is still in flight when the screen
+  // itself unmounts (e.g. navigating back mid-load).
+  useEffect(() => {
+    return () => {
+      openFileAbortRef.current?.abort();
+    };
+  }, []);
 
   /** Navigate to `path`, inferring forward/back from the depth change for the slide direction. */
   const navigateTo = useCallback(
@@ -152,56 +203,154 @@ export default function FileExplorerScreen() {
     return crumbs;
   }, [currentPath]);
 
+  /**
+   * Streams a text/code file in over the raw-file HTTP endpoint's Range
+   * support, TEXT_CHUNK_SIZE bytes at a time (chunkedDownload.ts), instead
+   * of the old single all-or-nothing `fsRead`. Each chunk both extends
+   * `viewerContent` (so the sheet shows a real, growing prefix of the file
+   * rather than nothing until the whole thing lands) and updates
+   * `textProgress` for the determinate progress bar. Split out from
+   * `handlePress` so Retry (on a failed chunk request) can re-run the exact
+   * same load without the row being tapped again.
+   */
+  const loadTextPreview = useCallback(
+    async (node: FileNode, controller: AbortController) => {
+      if (!client) {
+        setTextLoading(false);
+        return;
+      }
+      lastTextNodeRef.current = node;
+      setTextLoadError(null);
+      setTextLoading(true);
+      setTextProgress(undefined);
+      let receivedFirstChunk = false;
+      try {
+        const url = await client.getRawFileUrl(node.path, controller.signal);
+        if (controller.signal.aborted) return;
+        await fetchTextChunked(url, {
+          chunkSize: TEXT_CHUNK_SIZE,
+          signal: controller.signal,
+          onChunk: (textSoFar, loaded, total) => {
+            if (controller.signal.aborted) return;
+            setViewerContent(textSoFar);
+            if (!receivedFirstChunk) {
+              receivedFirstChunk = true;
+              setTextLoading(false);
+            }
+            // total undefined (server didn't report a size) reads as "still
+            // going" rather than silently hiding the progress bar.
+            setTextProgress(total !== undefined && loaded >= total ? undefined : total !== undefined ? loaded / total : 0);
+          },
+        });
+        if (!controller.signal.aborted) setTextProgress(undefined);
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return;
+        // A failure after some content already rendered keeps that partial
+        // content on screen (still real, still useful) and surfaces the
+        // error+Retry alongside it, rather than blanking out what loaded
+        // successfully — per pig-network-states, a failed action doesn't
+        // discard what it already had.
+        setTextLoadError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!controller.signal.aborted) {
+          setTextLoading(false);
+          setTextProgress(undefined);
+        }
+      }
+    },
+    [client],
+  );
+
+  const retryTextLoad = useCallback(() => {
+    const node = lastTextNodeRef.current;
+    if (!node) return;
+    openFileAbortRef.current?.abort();
+    const controller = new AbortController();
+    openFileAbortRef.current = controller;
+    void loadTextPreview(node, controller);
+  }, [loadTextPreview]);
+
+  const cancelActiveLoad = useCallback(() => {
+    // Same effect as closing the sheet's load without actually closing the
+    // sheet — per pig-network-states' cancellation rule, this returns to a
+    // neutral resting state (no error styling) rather than Failed.
+    openFileAbortRef.current?.abort();
+    setTextLoading(false);
+    setTextProgress(undefined);
+    setImageLoading(false);
+  }, []);
+
   const handlePress = useCallback(
     async (node: FileNode) => {
       if (node.type === 'folder') {
         navigateTo(node.path);
         return;
       }
+      // Cancel whatever the previous file open was still waiting on — its
+      // response is no longer wanted and, per bridgeClient's requestId
+      // matching, will now just be dropped instead of racing this one.
+      openFileAbortRef.current?.abort();
+      const controller = new AbortController();
+      openFileAbortRef.current = controller;
+
       const kind = kindForMimeType(node.mimeType);
+      const tooLargeToPreview =
+        (kind === 'text' || kind === 'image') && node.sizeBytes !== undefined && node.sizeBytes > MAX_AUTO_PREVIEW_BYTES;
       setViewerFile({
         name: node.name,
         path: node.path,
         kind,
         mimeType: node.mimeType,
         sizeBytes: node.sizeBytes,
+        ...(tooLargeToPreview
+          ? {
+              previewSkippedReason: `Too large to preview in-app (over ${formatBytes(MAX_AUTO_PREVIEW_BYTES)}) — download or open in browser instead.`,
+            }
+          : {}),
       });
       setImageLoadFailed(false);
+      setTextLoadError(null);
+      setViewerContent(undefined);
+      if (tooLargeToPreview) {
+        return;
+      }
       if (kind === 'text') {
-        setViewerContent(undefined);
-        if (client) {
-          try {
-            const content = await client.fsRead(node.path);
-            setViewerContent(content);
-          } catch {
-            setViewerContent(undefined);
-          }
-        }
+        await loadTextPreview(node, controller);
       } else if (kind === 'image') {
-        setViewerContent(undefined);
         if (client) {
           setImageLoading(true);
           try {
-            const url = await client.getRawFileUrl(node.path);
+            const url = await client.getRawFileUrl(node.path, controller.signal);
+            if (controller.signal.aborted) return;
             setViewerFile((prev) => (prev && prev.path === node.path ? { ...prev, imageUri: url } : prev));
-          } catch {
+          } catch (err) {
+            if ((err as Error)?.name === 'AbortError') return;
             setImageLoadFailed(true);
           } finally {
-            setImageLoading(false);
+            if (!controller.signal.aborted) setImageLoading(false);
           }
         }
-      } else {
-        setViewerContent(undefined);
       }
     },
-    [client, navigateTo],
+    [client, navigateTo, loadTextPreview],
   );
 
   const closeViewer = useCallback(() => {
+    // This is the cancel: dismissing the sheet (X, swipe-down, backdrop tap)
+    // while a file is still loading now actually stops that load instead of
+    // letting it finish in the background and silently do nothing with the
+    // result — and it never blocked the rest of the screen to begin with,
+    // since the explorer list/breadcrumbs/back button sit above this in the
+    // same tree and were never disabled while a file loads.
+    openFileAbortRef.current?.abort();
     setViewerFile(null);
     setViewerContent(undefined);
     setImageLoading(false);
     setImageLoadFailed(false);
+    setTextLoading(false);
+    setTextProgress(undefined);
+    setTextLoadError(null);
+    lastTextNodeRef.current = null;
   }, []);
 
   // Bring the active (last) breadcrumb segment into view whenever the path changes.
@@ -273,6 +422,33 @@ export default function FileExplorerScreen() {
       </ScrollView>
 
       <Animated.View style={[styles.listWrapper, traverseStyle]}>
+        {showListSkeleton ? (
+          // Skeleton, not a spinner, per pig-loading-states' decision rule:
+          // a folder row's shape (icon + name + size) is already known, so
+          // this previews that shape instead of showing an indeterminate
+          // spinner over blank space while fsList is in flight.
+          <View style={{ paddingTop: spacing.xs }} accessibilityLabel="Loading folder contents">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <View
+                key={i}
+                style={[
+                  styles.row,
+                  { paddingHorizontal: spacing.md, minHeight: minTouchTarget, borderBottomColor: colors.border },
+                ]}
+              >
+                <View style={[styles.skeletonIcon, { backgroundColor: colors.border }]} />
+                <View style={{ marginLeft: spacing.sm, flex: 1 }}>
+                  <View
+                    style={[
+                      styles.skeletonLine,
+                      { backgroundColor: colors.border, width: `${45 - i * 4}%` },
+                    ]}
+                  />
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : (
         <FlatList
           data={entries}
           keyExtractor={(item) => item.path}
@@ -355,11 +531,17 @@ export default function FileExplorerScreen() {
             </Pressable>
           )}
         />
+        )}
       </Animated.View>
 
       <FileViewerSheet
         file={viewerFile}
         textContent={viewerContent}
+        textLoading={textLoading}
+        textProgress={textProgress}
+        textLoadError={textLoadError}
+        onRetryText={retryTextLoad}
+        onCancelLoad={cancelActiveLoad}
         imageLoading={imageLoading}
         imageLoadFailed={imageLoadFailed}
         onClose={closeViewer}
@@ -401,5 +583,16 @@ const styles = StyleSheet.create({
   },
   emptyState: {
     alignItems: 'center',
+  },
+  skeletonIcon: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    opacity: 0.6,
+  },
+  skeletonLine: {
+    height: 12,
+    borderRadius: 4,
+    opacity: 0.6,
   },
 });

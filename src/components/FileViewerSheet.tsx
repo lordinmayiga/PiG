@@ -33,16 +33,28 @@ export interface ViewableFile {
   sizeBytes?: number;
   /** Real local/device URI, when one exists (e.g. a just-picked photo) — rendered in the lightbox instead of the fixture placeholder. */
   imageUri?: string;
+  /** Set instead of attempting a preview when the file is over the auto-preview size threshold — the sheet falls back to its metadata-only body (as for kind: 'other') regardless of `kind`, showing this as the explanation. */
+  previewSkippedReason?: string;
 }
 
 interface FileViewerSheetProps {
   file: ViewableFile | null;
-  /** Text-file body, resolved by the caller (fixture lookup) — only read for kind: 'text'. */
+  /** Text-file body, resolved by the caller — only read for kind: 'text'. Populated progressively as chunks arrive, so this can be a prefix of the full file while loading continues. */
   textContent?: string;
   /** True while the caller is resolving a real image URL (client.getRawFileUrl) for a kind: 'image' file with no imageUri yet. */
   imageLoading?: boolean;
   /** True once that resolution has been attempted and failed — distinct from "never attempted" (no client / fixture-only build), which keeps the old placeholder copy. */
   imageLoadFailed?: boolean;
+  /** True only until the *first* chunk of text content has arrived — the spinner phase, per pig-loading-states (no content shape to preview yet). */
+  textLoading?: boolean;
+  /** 0-1 once the first chunk has rendered and more are still loading; undefined once the whole file has arrived or loading hasn't started. Drives the determinate progress bar (pig-loading-states) shown *under* the already-visible partial content — a different phase from `textLoading`'s spinner. */
+  textProgress?: number;
+  /** Set when a chunk request failed (not cancelled) after at least one chunk may have already rendered. */
+  textLoadError?: string | null;
+  /** Re-attempts the text load from the start — wired to the inline error state's Retry per pig-network-states. */
+  onRetryText?: () => void;
+  /** Cancels whichever load (text or image) is currently pending — shown as an explicit action per pig-network-states' cancellation section, not just an implicit "close and hope it stops". */
+  onCancelLoad?: () => void;
   onClose: () => void;
 }
 
@@ -58,10 +70,28 @@ function formatBytes(bytes?: number): string {
  * pig-markdown-rendering: image → full-screen lightbox, text/code →
  * monospace or markdown preview, anything else → metadata + Download.
  */
-export function FileViewerSheet({ file, textContent, imageLoading, imageLoadFailed, onClose }: FileViewerSheetProps) {
+export function FileViewerSheet({
+  file,
+  textContent,
+  imageLoading,
+  imageLoadFailed,
+  textLoading,
+  textProgress,
+  textLoadError,
+  onRetryText,
+  onCancelLoad,
+  onClose,
+}: FileViewerSheetProps) {
   const { colors, spacing, radius, typeScale } = useTheme();
   const monoLoaded = useMonoFont();
   const navigation = useNavigation<any>();
+  // A file over the auto-preview threshold falls back to the metadata-only
+  // body regardless of its real kind — the caller sets previewSkippedReason
+  // instead of ever starting a fetch for it, so there's nothing here to
+  // show but the explanation + Download/Open-in-browser. Computed up top
+  // (not just at render time below) so the sheet-vs-lightbox entrance
+  // effect further down agrees with what actually renders.
+  const effectiveKind = file?.previewSkippedReason ? 'other' : file?.kind;
   const { client, host } = useBridge();
 
   const [toastVisible, setToastVisible] = useState(false);
@@ -69,15 +99,31 @@ export function FileViewerSheet({ file, textContent, imageLoading, imageLoadFail
   const [showRaw, setShowRaw] = useState(false);
   // 300ms delay-before-show per pig-loading-states, so a fast image load never flashes a spinner.
   const [showImageSpinner, setShowImageSpinner] = useState(false);
+  // Same delay-before-show rule applied to text/code, which previously had
+  // no pending state at all — the sheet just showed a blank body.
+  const [showTextSpinner, setShowTextSpinner] = useState(false);
 
   useEffect(() => {
-    if (!imageLoading) {
-      setShowImageSpinner(false);
-      return;
-    }
+    if (!imageLoading) return;
     const timer = setTimeout(() => setShowImageSpinner(true), 300);
-    return () => clearTimeout(timer);
+    // Runs both on unmount and whenever a dependency changes (imageLoading
+    // flipping to false, or a new file opening) — either way the spinner
+    // should stop showing, so the reset lives here rather than as a
+    // synchronous setState in the effect body itself.
+    return () => {
+      clearTimeout(timer);
+      setShowImageSpinner(false);
+    };
   }, [imageLoading, file?.path]);
+
+  useEffect(() => {
+    if (!textLoading) return;
+    const timer = setTimeout(() => setShowTextSpinner(true), 300);
+    return () => {
+      clearTimeout(timer);
+      setShowTextSpinner(false);
+    };
+  }, [textLoading, file?.path]);
 
   // Reset states when a new file opens
   const [lastFilePath, setLastFilePath] = useState(file?.path);
@@ -146,7 +192,7 @@ export function FileViewerSheet({ file, textContent, imageLoading, imageLoadFail
   const dragStartY = useSharedValue(0);
 
   useEffect(() => {
-    if (!file || file.kind === 'image') return;
+    if (!file || effectiveKind === 'image') return;
     if (isReduceMotionEnabled()) {
       sheetTranslateY.value = 0;
       return;
@@ -198,12 +244,21 @@ export function FileViewerSheet({ file, textContent, imageLoading, imageLoadFail
       <View style={[styles.scrim, { backgroundColor: colors.scrim }, fullscreen && styles.scrimFullscreen]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close file viewer" />
 
-        {file.kind === 'image' ? (
+        {effectiveKind === 'image' ? (
           <View style={[styles.lightbox, { backgroundColor: colors.ink }]}>
             {file.imageUri ? (
               <Image source={{ uri: file.imageUri }} style={styles.lightboxImage} resizeMode="contain" />
             ) : showImageSpinner ? (
-              <ActivityIndicator size="large" color={colors.canvas} />
+              <View style={styles.imagePlaceholder}>
+                <ActivityIndicator size="large" color={colors.canvas} />
+                {onCancelLoad && (
+                  <Pressable onPress={onCancelLoad} accessibilityRole="button" accessibilityLabel="Cancel" hitSlop={12} style={{ marginTop: spacing.md }}>
+                    <Text style={[typeScale.bodyMedium, { color: colors.canvas }]} maxFontSizeMultiplier={1.3}>
+                      Cancel
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
             ) : imageLoadFailed ? (
               <View style={styles.imagePlaceholder}>
                 <Icon icon={AlertCircle} size={24} color={colors.canvas} />
@@ -298,43 +353,100 @@ export function FileViewerSheet({ file, textContent, imageLoading, imageLoadFail
                   </Pressable>
                 </View>
 
-                {file.kind === 'text' ? (
-                  <ScrollView
-                    style={[
-                      styles.textScroller,
-                      fullscreen ? styles.textScrollerFullscreen : { maxHeight: 420 },
-                      {
-                        margin: spacing.md,
-                        backgroundColor: colors.canvas,
-                        borderRadius: radius.chip,
-                        borderWidth: StyleSheet.hairlineWidth,
-                        borderColor: colors.border,
-                      },
-                    ]}
-                  >
-                    {isMarkdown && !showRaw ? (
-                      <View style={{ padding: spacing.sm }} testID="formatted-markdown-body">
-                        <MarkdownBody content={textContent ?? ''} />
+                {effectiveKind === 'text' ? (
+                  <>
+                    <ScrollView
+                      style={[
+                        styles.textScroller,
+                        fullscreen ? styles.textScrollerFullscreen : { maxHeight: 420 },
+                        {
+                          margin: spacing.md,
+                          marginBottom: textProgress !== undefined ? spacing.xxs : spacing.md,
+                          backgroundColor: colors.canvas,
+                          borderRadius: radius.chip,
+                          borderWidth: StyleSheet.hairlineWidth,
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      {textLoadError ? (
+                        <View style={styles.textLoading}>
+                          <Icon icon={AlertCircle} size={20} color={colors.destructive} />
+                          <Text style={[typeScale.body, { color: colors.ink, marginTop: spacing.sm, textAlign: 'center' }]} maxFontSizeMultiplier={1.3}>
+                            {textLoadError}
+                          </Text>
+                          {onRetryText && (
+                            <Pressable onPress={onRetryText} accessibilityRole="button" accessibilityLabel="Retry" style={{ marginTop: spacing.sm }}>
+                              <Text style={[typeScale.bodyMedium, { color: colors.destructive }]} maxFontSizeMultiplier={1.3}>
+                                Retry
+                              </Text>
+                            </Pressable>
+                          )}
+                        </View>
+                      ) : textContent === undefined && showTextSpinner ? (
+                        <View style={styles.textLoading}>
+                          <ActivityIndicator size="small" color={colors.inkSecondary} />
+                          {onCancelLoad && (
+                            <Pressable onPress={onCancelLoad} accessibilityRole="button" accessibilityLabel="Cancel" hitSlop={12} style={{ marginTop: spacing.sm }}>
+                              <Text style={[typeScale.bodyMedium, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
+                                Cancel
+                              </Text>
+                            </Pressable>
+                          )}
+                        </View>
+                      ) : isMarkdown && !showRaw ? (
+                        <View style={{ padding: spacing.sm }} testID="formatted-markdown-body">
+                          <MarkdownBody content={textContent ?? ''} />
+                        </View>
+                      ) : !isMarkdown && codeLanguage ? (
+                        <ScrollView horizontal testID="highlighted-code-source" contentContainerStyle={{ padding: spacing.sm }}>
+                          <CodeHighlight code={textContent ?? ''} language={codeLanguage} />
+                        </ScrollView>
+                      ) : (
+                        <ScrollView horizontal testID="raw-markdown-source">
+                          <Text
+                            selectable
+                            style={[
+                              styles.codeText,
+                              { color: colors.ink, padding: spacing.sm, fontFamily: monoLoaded ? monoFontFamily.regular : monoFontFallback },
+                            ]}
+                            maxFontSizeMultiplier={1.3}
+                          >
+                            {textContent ?? ''}
+                          </Text>
+                        </ScrollView>
+                      )}
+                    </ScrollView>
+
+                    {/* Determinate progress per pig-loading-states: content is already
+                        showing above (a real prefix of the file), this is "loading
+                        more" — an element-level indicator, not a screen block — with
+                        its own Cancel per pig-network-states' cancellation rule. */}
+                    {textProgress !== undefined ? (
+                      <View style={{ marginHorizontal: spacing.md, marginBottom: spacing.sm }}>
+                        <View style={[styles.progressTrack, { backgroundColor: colors.border }]}>
+                          <View
+                            style={[
+                              styles.progressFill,
+                              { backgroundColor: colors.accent, width: `${Math.min(100, Math.round(textProgress * 100))}%` },
+                            ]}
+                          />
+                        </View>
+                        <View style={[styles.progressRow, { marginTop: spacing.xxs }]}>
+                          <Text style={[typeScale.caption, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
+                            Loading {Math.round(textProgress * 100)}%
+                          </Text>
+                          {onCancelLoad && (
+                            <Pressable onPress={onCancelLoad} accessibilityRole="button" accessibilityLabel="Cancel">
+                              <Text style={[typeScale.caption, { color: colors.accent }]} maxFontSizeMultiplier={1.3}>
+                                Cancel
+                              </Text>
+                            </Pressable>
+                          )}
+                        </View>
                       </View>
-                    ) : !isMarkdown && codeLanguage ? (
-                      <ScrollView horizontal testID="highlighted-code-source" contentContainerStyle={{ padding: spacing.sm }}>
-                        <CodeHighlight code={textContent ?? ''} language={codeLanguage} />
-                      </ScrollView>
-                    ) : (
-                      <ScrollView horizontal testID="raw-markdown-source">
-                        <Text
-                          selectable
-                          style={[
-                            styles.codeText,
-                            { color: colors.ink, padding: spacing.sm, fontFamily: monoLoaded ? monoFontFamily.regular : monoFontFallback },
-                          ]}
-                          maxFontSizeMultiplier={1.3}
-                        >
-                          {textContent ?? ''}
-                        </Text>
-                      </ScrollView>
-                    )}
-                  </ScrollView>
+                    ) : null}
+                  </>
                 ) : (
                   <View style={{ padding: spacing.md, gap: spacing.xs }}>
                     <View style={styles.metaRow}>
@@ -349,7 +461,7 @@ export function FileViewerSheet({ file, textContent, imageLoading, imageLoadFail
                       </View>
                     </View>
                     <Text style={[typeScale.caption, { color: colors.inkSecondary }]} maxFontSizeMultiplier={1.3}>
-                      No in-app preview for this file type.
+                      {file.previewSkippedReason ?? 'No in-app preview for this file type.'}
                     </Text>
                   </View>
                 )}
@@ -391,7 +503,7 @@ export function FileViewerSheet({ file, textContent, imageLoading, imageLoadFail
                         borderRadius: radius.pill,
                         marginHorizontal: spacing.md,
                         marginBottom: spacing.md,
-                        marginTop: file.kind === 'text' && !isHtml ? 0 : spacing.xs,
+                        marginTop: effectiveKind === 'text' && !isHtml ? 0 : spacing.xs,
                       },
                     ]}
                   >
@@ -492,6 +604,25 @@ const styles = StyleSheet.create({
   textScroller: {},
   textScrollerFullscreen: {
     flex: 1,
+  },
+  textLoading: {
+    padding: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  progressTrack: {
+    height: 3,
+    borderRadius: 1.5,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 1.5,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   metaRow: {
     flexDirection: 'row',

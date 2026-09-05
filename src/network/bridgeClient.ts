@@ -27,6 +27,27 @@ import type {
 
 export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
 
+/**
+ * fs_read_result/fs_raw_url_result used to be matched to their caller by
+ * file `path` alone (see FsReadResultPayload/FsRawUrlResultPayload) — but
+ * the backend already echoes each request's envelope `id` back on its
+ * response (server.ts's `send(ws, ..., envelope.id)`), so two overlapping
+ * requests for the *same path* (open a file, close it, reopen it before the
+ * first response lands) could resolve in either order, and the stale one's
+ * `.then` would win because nothing distinguished it from the fresh one.
+ * Carrying `requestId` through the emitter and matching on it instead of
+ * `path` makes each caller hear only its own response.
+ */
+type WithRequestId<T> = T & { requestId: string };
+
+/** RN's AbortController ships without DOMException, so build an equivalent
+ * `.name === 'AbortError'` marker callers can check for with `err.name`. */
+function abortError(): Error {
+  const err = new Error('Request was cancelled');
+  err.name = 'AbortError';
+  return err;
+}
+
 // --- Tiny dependency-free event emitter -----------------------------------
 // RN doesn't ship Node's `events` module; this covers the narrow surface
 // bridgeClient needs without pulling in a polyfill.
@@ -212,8 +233,8 @@ export class BridgeClient {
   private readonly actionResultEmitter = new Emitter<ActionResultPayload>();
   private readonly errorEmitter = new Emitter<BridgeError>();
   private readonly fsListResultEmitter = new Emitter<FsListResultPayload>();
-  private readonly fsReadResultEmitter = new Emitter<FsReadResultPayload>();
-  private readonly fsRawUrlResultEmitter = new Emitter<FsRawUrlResultPayload>();
+  private readonly fsReadResultEmitter = new Emitter<WithRequestId<FsReadResultPayload>>();
+  private readonly fsRawUrlResultEmitter = new Emitter<WithRequestId<FsRawUrlResultPayload>>();
   private readonly setOpenRouterKeyAckEmitter = new Emitter<SetOpenRouterKeyAckPayload>();
   private readonly getOpenRouterKeyAckEmitter = new Emitter<GetOpenRouterKeyAckPayload>();
   private readonly commandSearchResultEmitter = new Emitter<CommandSearchResultPayload>();
@@ -318,24 +339,48 @@ export class BridgeClient {
     });
   }
 
-  /** Reads file contents from the VPS filesystem. */
-  async fsRead(path: string): Promise<string> {
+  /**
+   * Reads file contents from the VPS filesystem.
+   *
+   * `signal` lets a caller cancel while this is in flight (e.g. the file
+   * viewer sheet closed before the response arrived) — the request already
+   * sent can't be recalled off the wire, but the caller stops waiting on it
+   * immediately instead of the response landing late and clobbering
+   * whatever's on screen by then. Rejects with `AbortError` (distinct from
+   * a real failure) so callers can skip showing an error for a cancel.
+   */
+  async fsRead(path: string, signal?: AbortSignal): Promise<string> {
     return new Promise((resolve, reject) => {
       const id = makeEnvelopeId();
       let timer: ReturnType<typeof setTimeout>;
+      const cleanup = () => {
+        clearTimeout(timer);
+        unsub();
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(abortError());
+      };
       const unsub = this.fsReadResultEmitter.on((result) => {
-        if (!result.path || result.path === path) {
-          clearTimeout(timer);
-          unsub();
-          if (result.error) {
-            reject(new Error(result.error));
-          } else {
-            resolve(result.content ?? '');
-          }
+        if (result.requestId !== id) return;
+        cleanup();
+        if (result.error) {
+          reject(new Error(result.error));
+        } else {
+          resolve(result.content ?? '');
         }
       });
+      if (signal) {
+        if (signal.aborted) {
+          cleanup();
+          reject(abortError());
+          return;
+        }
+        signal.addEventListener('abort', onAbort);
+      }
       timer = setTimeout(() => {
-        unsub();
+        cleanup();
         reject(new Error('fsRead request timed out'));
       }, 10000);
       this.transport.send({
@@ -348,24 +393,39 @@ export class BridgeClient {
     });
   }
 
-  /** Requests a temporary HTTP URL to view raw file content on the VPS. */
-  async getRawFileUrl(path: string): Promise<string> {
+  /** Requests a temporary HTTP URL to view raw file content on the VPS. See `fsRead`'s `signal` doc. */
+  async getRawFileUrl(path: string, signal?: AbortSignal): Promise<string> {
     return new Promise((resolve, reject) => {
       const id = makeEnvelopeId();
       let timer: ReturnType<typeof setTimeout>;
+      const cleanup = () => {
+        clearTimeout(timer);
+        unsub();
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(abortError());
+      };
       const unsub = this.fsRawUrlResultEmitter.on((result) => {
-        if (!result.path || result.path === path) {
-          clearTimeout(timer);
-          unsub();
-          if (result.error) {
-            reject(new Error(result.error));
-          } else {
-            resolve(result.url);
-          }
+        if (result.requestId !== id) return;
+        cleanup();
+        if (result.error) {
+          reject(new Error(result.error));
+        } else {
+          resolve(result.url);
         }
       });
+      if (signal) {
+        if (signal.aborted) {
+          cleanup();
+          reject(abortError());
+          return;
+        }
+        signal.addEventListener('abort', onAbort);
+      }
       timer = setTimeout(() => {
-        unsub();
+        cleanup();
         reject(new Error('getRawFileUrl request timed out'));
       }, 10000);
       this.transport.send({
@@ -685,13 +745,13 @@ export class BridgeClient {
 
       case 'fs_read_result': {
         const payload = envelope.payload as FsReadResultPayload;
-        this.fsReadResultEmitter.emit(payload);
+        this.fsReadResultEmitter.emit({ ...payload, requestId: envelope.id });
         return;
       }
 
       case 'fs_raw_url_result': {
         const payload = envelope.payload as FsRawUrlResultPayload;
-        this.fsRawUrlResultEmitter.emit(payload);
+        this.fsRawUrlResultEmitter.emit({ ...payload, requestId: envelope.id });
         return;
       }
 
