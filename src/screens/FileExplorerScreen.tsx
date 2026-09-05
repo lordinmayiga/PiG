@@ -73,6 +73,8 @@ export default function FileExplorerScreen() {
   const [retryToken, setRetryToken] = useState(0);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageLoadFailed, setImageLoadFailed] = useState(false);
   const traverseStyle = useFolderTraverseSlide(currentPath, navDirection);
 
   const breadcrumbScrollRef = useRef<ScrollView>(null);
@@ -164,7 +166,9 @@ export default function FileExplorerScreen() {
         mimeType: node.mimeType,
         sizeBytes: node.sizeBytes,
       });
+      setImageLoadFailed(false);
       if (kind === 'text') {
+        setViewerContent(undefined);
         if (client) {
           try {
             const content = await client.fsRead(node.path);
@@ -172,8 +176,19 @@ export default function FileExplorerScreen() {
           } catch {
             setViewerContent(undefined);
           }
-        } else {
-          setViewerContent(undefined);
+        }
+      } else if (kind === 'image') {
+        setViewerContent(undefined);
+        if (client) {
+          setImageLoading(true);
+          try {
+            const url = await client.getRawFileUrl(node.path);
+            setViewerFile((prev) => (prev && prev.path === node.path ? { ...prev, imageUri: url } : prev));
+          } catch {
+            setImageLoadFailed(true);
+          } finally {
+            setImageLoading(false);
+          }
         }
       } else {
         setViewerContent(undefined);
@@ -185,6 +200,8 @@ export default function FileExplorerScreen() {
   const closeViewer = useCallback(() => {
     setViewerFile(null);
     setViewerContent(undefined);
+    setImageLoading(false);
+    setImageLoadFailed(false);
   }, []);
 
   // Bring the active (last) breadcrumb segment into view whenever the path changes.
@@ -340,7 +357,13 @@ export default function FileExplorerScreen() {
         />
       </Animated.View>
 
-      <FileViewerSheet file={viewerFile} textContent={viewerContent} onClose={closeViewer} />
+      <FileViewerSheet
+        file={viewerFile}
+        textContent={viewerContent}
+        imageLoading={imageLoading}
+        imageLoadFailed={imageLoadFailed}
+        onClose={closeViewer}
+      />
     </View>
   );
 }

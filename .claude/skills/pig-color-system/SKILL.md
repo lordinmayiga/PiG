@@ -63,7 +63,7 @@ For any surface that sits one step up from `canvas` but isn't a full `card`/`ele
 
 ## Accent tint (selected-row highlight, inline highlight pills)
 
-Don't hand-roll a tint with string concatenation (`colors.accent + '15'`, `+ '25'`, etc.) — it's unvalidated in either mode and was found in three places (selected-model row, thought-line path pill) doing exactly that. Use the validated token instead:
+Don't hand-roll a tint with string concatenation (`colors.accent + '15'`, `+ '25'`, etc.) — it's unvalidated in either mode and was found in three places (selected-model row, thought-line path pill) — plus a fourth, `MarkdownBody`'s file-link pill, found and fixed 2026-09-05. Use the validated token instead:
 
 | Name | Hex | Role |
 |---|---|---|
@@ -86,6 +86,26 @@ Never use `neutral[100]`/`neutral[200]`/`neutral[300]` unconditionally as a `pre
 ## Disabled state
 
 A disabled interactive element (see `pig-interaction-states` for the full rule) reduces its fill/text/icon to **0.4 opacity** of its enabled color — not a separate hardcoded gray. This is the one state that's exempt from the "every color needs its own dark-mode step" rule below, since opacity scales the existing token correctly in both modes on its own.
+
+## Syntax highlighting (file viewer only) — PROPOSED, pending design review
+
+**2026-09-05.** Added for `CodeHighlight.tsx` (the file viewer's code display — see `pig-markdown-rendering`'s "Code blocks" section; chat's fenced code blocks stay flat/unhighlighted, unaffected). Drafted, not yet confirmed by a design pass — flag before treating it as locked the way the rest of this palette is.
+
+Only **one** new hex pair was added. Keywords and comments deliberately reuse existing tokens rather than invent two more:
+
+| Token class | Color used | Why |
+|---|---|---|
+| Keyword | `accent` (reused) | Not a new hue — considered reuse, not a violation of the "semantic colors never reused" rule below, since `accent` isn't a semantic (success/warning/destructive) color. |
+| Comment | `inkSecondary` (reused) | De-emphasized text already means "secondary" everywhere else in the app. |
+| String literal | `syntaxString` (new) | Nothing existing fit — needed a hue outside the app's warm palette (purple/teal/copper/ochre) so it doesn't misread as a semantic color. |
+| Everything else (identifiers, numbers, punctuation, CSS selectors/properties) | `ink` (default) | v1 only highlights 3 token classes; unhandled cases fall back to plain text rather than a wrong color. |
+
+| Name | Hex | Role |
+|---|---|---|
+| Slate Blue | `#1a5a9e` | `syntaxString`, light mode (6.49:1 on Snow) |
+| Slate Blue — Dark | `#8ec2ee` | `syntaxString`, dark mode (10.19:1 on Onyx) |
+
+Both pass the 4.5:1 AA floor below. Reusing `accent` for keywords is the one judgment call worth a second look in review — it doubles as this app's only "tappable/branded" color elsewhere, so a keyword-colored token could misread as interactive inside the code view. Flag if that reads wrong in practice.
 
 ## High contrast — not decided, not built
 

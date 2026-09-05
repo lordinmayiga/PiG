@@ -84,6 +84,16 @@ const PORT = Number(process.env.PIG_BRIDGE_PORT ?? 8787);
 /** Sockets that have completed `hello`. Unauthed sockets can only send `hello`. */
 const authedSockets = new Set<WebSocket>();
 
+/**
+ * `Host` header each socket's WS upgrade request arrived on (e.g.
+ * "147.79.101.172:8787"), so `fs_raw_url_request` can mint URLs on the same
+ * host the client is already talking to instead of a hardcoded default —
+ * a raw-file URL on a different host either trips the browser's Private
+ * Network Access check (page origin vs. localhost) or, on a bare device
+ * WebView, resolves "localhost" to the device itself instead of the VPS.
+ */
+const socketHosts = new WeakMap<WebSocket, string>();
+
 /** How often to re-poll tmux and broadcast `session_list_update` to authed clients. */
 const SESSION_POLL_MS = 5000;
 
@@ -311,8 +321,11 @@ async function handleFsRawUrlRequest(ws: WebSocket, envelope: Envelope<FsRawUrlP
   const { path: filePath } = envelope.payload;
   try {
     const token = mintRawFileTicket(filePath);
-    const host = process.env.PIG_BRIDGE_HOST ?? 'localhost';
-    const url = `http://${host}:${PORT}/files/raw?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(token)}`;
+    // Prefer the host the client actually connected on (from the WS upgrade
+    // request's Host header) over the env var / localhost fallback — see
+    // socketHosts' doc comment for why a mismatched host breaks this.
+    const host = socketHosts.get(ws) ?? `${process.env.PIG_BRIDGE_HOST ?? 'localhost'}:${PORT}`;
+    const url = `http://${host}/files/raw?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(token)}`;
     const payload: FsRawUrlResultPayload = { url, path: filePath };
     send(ws, 'fs_raw_url_result', payload, envelope.sessionId, envelope.id);
   } catch (err: unknown) {
@@ -451,7 +464,10 @@ export function startServer(port = PORT): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer });
   (wss as unknown as { httpServer: HttpServer }).httpServer = httpServer;
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    const hostHeader = req.headers.host;
+    if (hostHeader) socketHosts.set(ws, hostHeader);
+
     ws.on('message', (raw) => {
       let envelope: Envelope;
       try {

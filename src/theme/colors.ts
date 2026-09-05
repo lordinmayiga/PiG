@@ -41,6 +41,16 @@ export interface ThemeColors {
   /** Press-feedback fill for interactive rows/buttons — one step up from `card`, direction inverts by mode. Never use `neutral[100..300]` directly for this. */
   pressedFill: string;
 
+  /**
+   * PROPOSED — syntax-highlight string color (file-viewer code highlighting,
+   * see pig-color-system's "Syntax highlighting" section and
+   * pig-markdown-rendering). Not yet confirmed by design review. Keywords
+   * reuse `accent` and comments reuse `inkSecondary` directly (no dedicated
+   * token) rather than invent two more new hues; this is the one color the
+   * scheme needed that nothing existing already covered.
+   */
+  syntaxString: string;
+
   /** Success / connected — fill & dot only, never text. */
   success: string;
   /** Warning text/icon — passes 4.5:1 on canvas, unlike the other semantic colors used as fills. */
@@ -85,6 +95,9 @@ const base = {
   rosyCopperDark: '#da846c',
   amberOchreDeep: '#8b6118',
   amberOchre: '#d2962d',
+  /** PROPOSED — syntax-highlight string color, see `syntaxString` above. */
+  slateBlue: '#1a5a9e',
+  slateBlueDark: '#8ec2ee',
 } as const;
 
 export const lightColors: ThemeColors = {
@@ -102,6 +115,7 @@ export const lightColors: ThemeColors = {
   accent: base.velvetOrchid,
   accentTint: '#f2e3f3',
   pressedFill: neutral[100],
+  syntaxString: base.slateBlue,
 
   success: base.mutedTeal,
   warning: base.amberOchreDeep,
@@ -127,6 +141,7 @@ export const darkColors: ThemeColors = {
   accent: base.velvetOrchidDark,
   accentTint: '#3a2a3c',
   pressedFill: '#372f2c',
+  syntaxString: base.slateBlueDark,
 
   success: base.mutedTeal,
   warning: base.amberOchre,

@@ -32,3 +32,31 @@ export function classifyLink(url: string): FileLinkInfo {
   }
   return { isFileLink: false, path: url };
 }
+
+/**
+ * Extensions recognized when auto-detecting a bare filename mention in plain
+ * agent prose (no markdown `[text](path)` brackets), e.g. "I edited
+ * src/App.tsx". Deliberately scoped to code/doc/config files an agent would
+ * plausibly reference — not a general "anything with a dot" matcher.
+ */
+const BARE_PATH_EXTENSIONS =
+  'tsx?|jsx?|mjs|cjs|py|md|markdown|json|css|scss|less|html?|ya?ml|txt|sh|bash|go|rs|java|kt|rb|c|cc|cpp|h|hpp|swift|xml|csv|sql|toml|ini|conf|log';
+
+/** Matches a bare path/filename token: optional `dir/` segments, a basename, one of the extensions above. No markdown brackets involved — this is for plain prose. */
+export const BARE_PATH_RE = new RegExp(`\\b(?:[\\w.-]+/)*[\\w-]+\\.(?:${BARE_PATH_EXTENSIONS})\\b`, 'g');
+
+/**
+ * Common "Product.js"-shaped proper nouns (Node.js, Vue.js, ...) that match
+ * BARE_PATH_RE's `.js` extension but are never actually a file reference in
+ * agent prose — the one deny-list a pure regex can't avoid. Not a claim of
+ * completeness, just the frameworks likely to come up in conversation.
+ */
+const BARE_PATH_DENYLIST = new Set([
+  'node.js', 'vue.js', 'express.js', 'next.js', 'react.js', 'd3.js', 'three.js', 'chart.js', 'p5.js',
+  'ember.js', 'angular.js', 'nuxt.js',
+]);
+
+/** True if a BARE_PATH_RE match is a real-looking file reference, not a denylisted framework name. */
+export function isLikelyFilePath(token: string): boolean {
+  return !BARE_PATH_DENYLIST.has(token.toLowerCase());
+}

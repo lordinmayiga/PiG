@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
-import { Download, File, FileText, Globe, Maximize2, Minimize2, X } from 'lucide-react-native';
+import { AlertCircle, Download, File, FileText, Globe, Maximize2, Minimize2, X } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 
 import { Icon, useTheme } from '../theme';
 import { isReduceMotionEnabled } from '../theme/motion';
 import { monoFontFallback, monoFontFamily, useMonoFont } from './monoFont';
 import { MarkdownBody } from './MarkdownBody';
+import { CodeHighlight, languageForFilename } from './CodeHighlight';
 import { useBridge } from '../contexts/BridgeContext';
 
 /** Damped-spring feel for the sheet entrance/dismiss, per pig-motion's sheet convention. */
@@ -38,6 +39,10 @@ interface FileViewerSheetProps {
   file: ViewableFile | null;
   /** Text-file body, resolved by the caller (fixture lookup) — only read for kind: 'text'. */
   textContent?: string;
+  /** True while the caller is resolving a real image URL (client.getRawFileUrl) for a kind: 'image' file with no imageUri yet. */
+  imageLoading?: boolean;
+  /** True once that resolution has been attempted and failed — distinct from "never attempted" (no client / fixture-only build), which keeps the old placeholder copy. */
+  imageLoadFailed?: boolean;
   onClose: () => void;
 }
 
@@ -53,15 +58,26 @@ function formatBytes(bytes?: number): string {
  * pig-markdown-rendering: image → full-screen lightbox, text/code →
  * monospace or markdown preview, anything else → metadata + Download.
  */
-export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetProps) {
+export function FileViewerSheet({ file, textContent, imageLoading, imageLoadFailed, onClose }: FileViewerSheetProps) {
   const { colors, spacing, radius, typeScale } = useTheme();
   const monoLoaded = useMonoFont();
   const navigation = useNavigation<any>();
-  const { client } = useBridge();
+  const { client, host } = useBridge();
 
   const [toastVisible, setToastVisible] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  // 300ms delay-before-show per pig-loading-states, so a fast image load never flashes a spinner.
+  const [showImageSpinner, setShowImageSpinner] = useState(false);
+
+  useEffect(() => {
+    if (!imageLoading) {
+      setShowImageSpinner(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowImageSpinner(true), 300);
+    return () => clearTimeout(timer);
+  }, [imageLoading, file?.path]);
 
   // Reset states when a new file opens
   const [lastFilePath, setLastFilePath] = useState(file?.path);
@@ -77,6 +93,8 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
     (file.mimeType === 'text/markdown' ||
       file.name.toLowerCase().endsWith('.md') ||
       file.name.toLowerCase().endsWith('.markdown'));
+
+  const codeLanguage = file?.kind === 'text' && !isMarkdown ? languageForFilename(file.name) : undefined;
 
   const isHtml =
     file?.mimeType === 'text/html' ||
@@ -99,8 +117,16 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
           // Fallback if request fails
         }
       }
+      if (!targetUrl && host) {
+        // Fallback if the WS request failed — build against the paired
+        // host, not "localhost" (which resolves to this device/browser,
+        // not the VPS running the bridge, and would also trip the
+        // browser's cross-origin Private Network Access check).
+        targetUrl = `http://${host}/files/raw?path=${encodeURIComponent(file.path)}`;
+      }
       if (!targetUrl) {
-        targetUrl = `http://localhost:8787/files/raw?path=${encodeURIComponent(file.path)}`;
+        console.error('Failed to open in browser: no bridge connection to resolve a URL from');
+        return;
       }
       onClose();
       // Navigate to Browser tab
@@ -176,7 +202,19 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
           <View style={[styles.lightbox, { backgroundColor: colors.ink }]}>
             {file.imageUri ? (
               <Image source={{ uri: file.imageUri }} style={styles.lightboxImage} resizeMode="contain" />
-            ) : (
+            ) : showImageSpinner ? (
+              <ActivityIndicator size="large" color={colors.canvas} />
+            ) : imageLoadFailed ? (
+              <View style={styles.imagePlaceholder}>
+                <Icon icon={AlertCircle} size={24} color={colors.canvas} />
+                <Text style={[typeScale.subheading, { color: colors.canvas, marginTop: spacing.sm }]} maxFontSizeMultiplier={1.3}>
+                  {file.name}
+                </Text>
+                <Text style={[typeScale.caption, { color: colors.canvas, marginTop: spacing.xxs, opacity: 0.7 }]} maxFontSizeMultiplier={1.3}>
+                  Couldn&apos;t load this image
+                </Text>
+              </View>
+            ) : !imageLoading ? (
               <View style={styles.imagePlaceholder}>
                 <Icon icon={FileText} size={24} color={colors.canvas} />
                 <Text style={[typeScale.subheading, { color: colors.canvas, marginTop: spacing.sm }]} maxFontSizeMultiplier={1.3}>
@@ -186,7 +224,7 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
                   Preview not available in this build — image fixture only
                 </Text>
               </View>
-            )}
+            ) : null}
             <Pressable
               onPress={onClose}
               accessibilityRole="button"
@@ -278,6 +316,10 @@ export function FileViewerSheet({ file, textContent, onClose }: FileViewerSheetP
                       <View style={{ padding: spacing.sm }} testID="formatted-markdown-body">
                         <MarkdownBody content={textContent ?? ''} />
                       </View>
+                    ) : !isMarkdown && codeLanguage ? (
+                      <ScrollView horizontal testID="highlighted-code-source" contentContainerStyle={{ padding: spacing.sm }}>
+                        <CodeHighlight code={textContent ?? ''} language={codeLanguage} />
+                      </ScrollView>
                     ) : (
                       <ScrollView horizontal testID="raw-markdown-source">
                         <Text

@@ -18,13 +18,18 @@ import type { BridgeClient } from '../network/bridgeClient';
 interface BridgeContextValue {
   client: BridgeClient | null;
   status: ConnectionStatus;
+  /** Paired credentials' "host:port" (e.g. "147.79.101.172:8787") — lets callers
+   * build a same-host fallback URL instead of hardcoding "localhost", which
+   * resolves to the wrong machine once the app isn't running on the VPS itself. */
+  host: string | null;
 }
 
-const BridgeContext = createContext<BridgeContextValue>({ client: null, status: 'disconnected' });
+const BridgeContext = createContext<BridgeContextValue>({ client: null, status: 'disconnected', host: null });
 
 export function BridgeProvider({ children }: { children: ReactNode }) {
   const [client, setClient] = useState<BridgeClient | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
+  const [host, setHost] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,6 +49,7 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
         disconnectBridge();
         setClient(null);
         setStatus('disconnected');
+        setHost(null);
         return;
       }
 
@@ -51,6 +57,7 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
       const bridgeClient = connectBridge(credentials.host, credentials.token);
       setClient(bridgeClient);
       setStatus(bridgeClient.getStatus());
+      setHost(credentials.host);
       unsubscribeStatus = bridgeClient.onConnectionStatus(setStatus);
       unsubscribeError = bridgeClient.onError((err) => {
         if (err.code === 'bad_token') {
@@ -74,7 +81,7 @@ export function BridgeProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return <BridgeContext.Provider value={{ client, status }}>{children}</BridgeContext.Provider>;
+  return <BridgeContext.Provider value={{ client, status, host }}>{children}</BridgeContext.Provider>;
 }
 
 export function useBridge(): BridgeContextValue {

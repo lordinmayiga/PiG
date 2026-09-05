@@ -223,6 +223,8 @@ export default function TranscriptScreen() {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageLoadFailed, setImageLoadFailed] = useState(false);
   const [slashOverlayVisible, setSlashOverlayVisible] = useState(false);
   // Badge's initial value must reflect which CLI this session actually runs
   // (`claude-code` vs `antigravity`) rather than a single hardcoded Gemini
@@ -363,10 +365,34 @@ export default function TranscriptScreen() {
     };
   }, [client, sessionId]);
 
+  // Fetches a real HTTP URL for a just-opened image file (unless one is
+  // already known locally, e.g. a just-picked device photo) and patches it
+  // onto whichever viewerFile is showing — guarded by path so a since-closed
+  // or since-replaced viewer doesn't get clobbered by a late response.
+  const loadRemoteImage = useCallback(
+    async (path: string, knownUri: string | undefined) => {
+      if (knownUri || !client) return;
+      setImageLoadFailed(false);
+      setImageLoading(true);
+      try {
+        const url = await client.getRawFileUrl(path);
+        setViewerFile((prev) => (prev && prev.path === path ? { ...prev, imageUri: url } : prev));
+      } catch {
+        setImageLoadFailed(true);
+      } finally {
+        setImageLoading(false);
+      }
+    },
+    [client],
+  );
+
   const openAttachment = useCallback(
     async (attachment: FileAttachment) => {
-      setViewerFile(attachmentToViewable(attachment));
+      const viewable = attachmentToViewable(attachment);
+      setViewerFile(viewable);
+      setImageLoadFailed(false);
       if (attachment.kind === 'text') {
+        setViewerContent(undefined);
         if (client) {
           try {
             const content = await client.fsRead(attachment.path);
@@ -374,19 +400,20 @@ export default function TranscriptScreen() {
           } catch {
             setViewerContent(undefined);
           }
-        } else {
-          setViewerContent(undefined);
         }
       } else {
         setViewerContent(undefined);
+        if (attachment.kind === 'image') void loadRemoteImage(attachment.path, viewable.imageUri);
       }
     },
-    [client],
+    [client, loadRemoteImage],
   );
 
   const closeViewer = useCallback(() => {
     setViewerFile(null);
     setViewerContent(undefined);
+    setImageLoading(false);
+    setImageLoadFailed(false);
   }, []);
 
   // Opens a file referenced by an inline markdown link (see
@@ -399,18 +426,22 @@ export default function TranscriptScreen() {
       const name = rawPath.split('/').pop() || rawPath;
       const isImage = /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name);
       setViewerFile({ name, path: rawPath, kind: isImage ? 'image' : 'text' });
-      if (!isImage && client) {
+      setImageLoadFailed(false);
+      setViewerContent(undefined);
+      if (isImage) {
+        void loadRemoteImage(rawPath, undefined);
+        return;
+      }
+      if (client) {
         try {
           const content = await client.fsRead(rawPath);
           setViewerContent(content);
         } catch {
           setViewerContent(undefined);
         }
-      } else {
-        setViewerContent(undefined);
       }
     },
-    [client],
+    [client, loadRemoteImage],
   );
 
   const handleSend = useCallback(
@@ -626,7 +657,13 @@ export default function TranscriptScreen() {
         onOpenSlash={() => setSlashOverlayVisible(true)}
       />
 
-      <FileViewerSheet file={viewerFile} textContent={viewerContent} onClose={closeViewer} />
+      <FileViewerSheet
+        file={viewerFile}
+        textContent={viewerContent}
+        imageLoading={imageLoading}
+        imageLoadFailed={imageLoadFailed}
+        onClose={closeViewer}
+      />
 
       <SlashCommandOverlay
         visible={slashOverlayVisible}
