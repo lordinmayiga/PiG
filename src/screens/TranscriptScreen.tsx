@@ -15,6 +15,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
 import {
+  AlertCircle,
   ChevronLeft,
   FlaskConical,
   FolderOpen,
@@ -30,8 +31,8 @@ import { Icon, useTheme } from '../theme';
 import { useFadeSlideIn } from '../theme/motion';
 import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
 import type { SessionsStackParamList } from '../navigation/SessionsStackNavigator';
-import type { FileAttachment, TranscriptMessage } from '../types';
-import { getCached, appendAndPersist, replaceAll } from '../transcriptCache';
+import type { AgentKind, FileAttachment, TranscriptMessage } from '../types';
+import { getCached, appendAndPersist, replaceAll, mergeTranscripts } from '../transcriptCache';
 import { useBridge } from '../contexts/BridgeContext';
 import { useSessions } from '../contexts/SessionsContext';
 import { AgentStatusDot } from '../components/AgentStatusDot';
@@ -86,19 +87,26 @@ interface TranscriptRowProps {
   item: TranscriptMessage;
   onOpenAttachment: (attachment: FileAttachment) => void;
   onOpenFile: (path: string) => void;
+  onRetrySend: (message: TranscriptMessage) => void;
 }
 
-function TranscriptRow({ item, onOpenAttachment, onOpenFile }: TranscriptRowProps) {
+function TranscriptRow({ item, onOpenAttachment, onOpenFile, onRetrySend }: TranscriptRowProps) {
   const { colors, spacing, typeScale } = useTheme();
   const animatedStyle = useFadeSlideIn();
 
   if (item.role === 'user') {
+    const sendFailed = item.sendStatus === 'failed';
+    const sendPending = item.sendStatus === 'pending';
     return (
       <Animated.View style={[styles.userRow, { paddingHorizontal: spacing.md, marginBottom: spacing.md }, animatedStyle]}>
         <View
           style={[
             styles.userBubble,
             { backgroundColor: colors.accent, borderRadius: 18, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
+            // A failed send still shows its bubble (never vanishes) but reads
+            // visibly unresolved — dimmed toward the disabled opacity rather
+            // than a second hardcoded treatment (pig-color-system).
+            sendFailed && { opacity: 0.6 },
           ]}
         >
           <Text style={[typeScale.body, { color: colors.onAccent }]} maxFontSizeMultiplier={1.3}>
@@ -112,9 +120,31 @@ function TranscriptRow({ item, onOpenAttachment, onOpenFile }: TranscriptRowProp
             ))}
           </View>
         ) : null}
-        <Text style={[typeScale.caption, { color: colors.inkSecondary, marginTop: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
-          {relativeTime(item.timestamp)}
-        </Text>
+        {sendFailed ? (
+          <View style={[styles.sendFailedRow, { marginTop: spacing.xxs, gap: spacing.xxs }]}>
+            <Icon icon={AlertCircle} size={16} color={colors.destructive} />
+            <Text style={[typeScale.caption, { color: colors.destructive }]} maxFontSizeMultiplier={1.3}>
+              Couldn&apos;t send.
+            </Text>
+            <Pressable
+              onPress={() => onRetrySend(item)}
+              accessibilityRole="button"
+              accessibilityLabel="Retry sending message"
+              hitSlop={8}
+            >
+              <Text
+                style={[typeScale.caption, { color: colors.destructive, fontWeight: '700', textDecorationLine: 'underline' }]}
+                maxFontSizeMultiplier={1.3}
+              >
+                Retry
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Text style={[typeScale.caption, { color: colors.inkSecondary, marginTop: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
+            {sendPending ? 'Sending…' : relativeTime(item.timestamp)}
+          </Text>
+        )}
       </Animated.View>
     );
   }
@@ -141,6 +171,15 @@ function TranscriptRow({ item, onOpenAttachment, onOpenFile }: TranscriptRowProp
       ) : item.content.trim() !== '' ? (
         <MarkdownBody content={item.content} onOpenFile={onOpenFile} />
       ) : null}
+      {status === 'cutoff' ? (
+        // pig-screen-states' "partial" transcript case: the connection
+        // dropped before this turn's `done: true` chunk arrived. Whatever
+        // content streamed in above is kept as-is — this caption just makes
+        // clear it isn't a finished turn, distinct from a normal 'done' dot.
+        <Text style={[typeScale.caption, { color: colors.warning, marginTop: spacing.xxs }]} maxFontSizeMultiplier={1.3}>
+          Cut off — reconnect to continue.
+        </Text>
+      ) : null}
       {item.attachments && item.attachments.length > 0 ? (
         <View style={[styles.attachmentsWrap, { gap: spacing.xxs, marginTop: spacing.sm }]}>
           {item.attachments.map((attachment) => (
@@ -152,6 +191,18 @@ function TranscriptRow({ item, onOpenAttachment, onOpenFile }: TranscriptRowProp
   );
 }
 
+/**
+ * Model badge shown before the user has picked a model for this session (or
+ * before the session's real current model has synced from the bridge) —
+ * a sensible per-agent default rather than a single hardcoded Gemini string
+ * (UI_FIXES_PLAN.md §2). Matches `sessionRegistry.ts`'s
+ * `defaultModelForAgent` on the backend: `claude-code` sessions default to
+ * Claude, `antigravity` sessions keep the existing Gemini default.
+ */
+function defaultModelBadgeForAgent(agent: AgentKind | undefined): string {
+  return agent === 'claude-code' ? 'Claude Sonnet 5' : 'Gemini 3.8 Flash (Low)';
+}
+
 export default function TranscriptScreen() {
   const { colors, spacing, radius, typeScale, minTouchTarget } = useTheme();
   const navigation = useNavigation<Nav>();
@@ -159,12 +210,36 @@ export default function TranscriptScreen() {
   const { sessionId } = route.params;
   const insets = useSafeAreaInsets();
   const { sessions } = useSessions();
-  const session = sessions.find((s) => s.id === sessionId);
+  // Matches by `id` (tmux's internal "$N", used once a session is reopened
+  // from the Sessions list — SessionsScreen passes `session.id`) OR `name`
+  // (used right after creation — SessionsScreen's create flow navigates
+  // here with `draft.name` before the backend has ever returned a real id,
+  // per UI_FIXES_PLAN.md item 3's e2e run: without the `name` fallback,
+  // `session` is always undefined for a just-created session, silently
+  // breaking every session-derived default — model badge, Files folder —
+  // for exactly the case a new user hits first). tmux session names are
+  // unique, so this can't introduce ambiguity.
+  const session = sessions.find((s) => s.id === sessionId || s.name === sessionId);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
   const [slashOverlayVisible, setSlashOverlayVisible] = useState(false);
-  const [sessionModelBadge, setSessionModelBadge] = useState('Gemini 3.8 Flash (Low)');
+  // Badge's initial value must reflect which CLI this session actually runs
+  // (`claude-code` vs `antigravity`) rather than a single hardcoded Gemini
+  // string — see UI_FIXES_PLAN.md §2. Once the user picks a model via
+  // `/model`, `onSelectModel` below overwrites this with the real choice.
+  const [sessionModelBadge, setSessionModelBadge] = useState(() => defaultModelBadgeForAgent(session?.agent));
+  // `sessions` (from `useSessions()`) can still be loading when this screen
+  // first mounts, in which case the initializer above fell back to
+  // `session?.agent === undefined`'s default. Re-derive once the real
+  // `session.agent` arrives — but only until the user actually picks a
+  // model via `/model`, after which their choice must stick.
+  const userPickedModelRef = useRef(false);
+  useEffect(() => {
+    if (!userPickedModelRef.current && session?.agent) {
+      setSessionModelBadge(defaultModelBadgeForAgent(session.agent));
+    }
+  }, [session?.agent]);
   const { client } = useBridge();
   // Track B placeholder-swap fix (REAL_AGENT_CONNECTION_PLAN.md §3a.1): the
   // optimistic local `agentReply` bubble appended in `handleSend` has a
@@ -236,8 +311,21 @@ export default function TranscriptScreen() {
 
     const unsubscribeResync = client.onResyncSnapshot((snapshot) => {
       if (snapshot.sessionId !== sessionId || !snapshot.transcript) return;
-      setMessages(snapshot.transcript);
-      void replaceAll(sessionId, snapshot.transcript);
+      // Server truth can legitimately be shorter than what's on-screen: the
+      // backend's transcript registry is in-memory (see sessionRegistry.ts)
+      // and, even with best-effort JSONL persistence, a resync racing a
+      // fresh-after-restart registry entry can return fewer messages than
+      // the client already has cached/rendered from before the restart.
+      // Never let a shorter snapshot destructively clobber a longer local
+      // transcript the user has already seen — merge instead: keep every
+      // local message, upsert-by-id anything the snapshot has newer/extra,
+      // and only fall back to straight replacement when the snapshot is the
+      // longer/equal one (the normal, expected resync case).
+      setMessages((prev) => {
+        const merged = mergeTranscripts(prev, snapshot.transcript!);
+        void replaceAll(sessionId, merged);
+        return merged;
+      });
     });
 
     const unsubscribeChunk = client.onTranscriptChunk((chunk) => {
@@ -327,15 +415,20 @@ export default function TranscriptScreen() {
 
   const handleSend = useCallback(
     (text: string, attachments: ComposerAttachment[], alreadySent = false) => {
+      const isConnected = Boolean(client && client.getStatus() === 'connected');
       const userMessage: TranscriptMessage = {
         id: `local-msg-${nextMessageId++}`,
         role: 'user',
         timestamp: new Date().toISOString(),
         content: text,
         attachments: attachments.length > 0 ? attachments : undefined,
+        // No delivery ack exists yet for a routed prompt, so this is the
+        // best signal available today: 'sent' once handed to a connected
+        // bridge client, 'failed' when there's no connection to send it on
+        // (surfaces the Retry affordance above instead of silently no-op'ing).
+        sendStatus: isConnected ? 'sent' : 'failed',
       };
       const replyId = `local-msg-${nextMessageId++}`;
-      const isConnected = Boolean(client && client.getStatus() === 'connected');
       const agentReply: TranscriptMessage = {
         id: replyId,
         role: 'agent',
@@ -361,6 +454,18 @@ export default function TranscriptScreen() {
       setTimeout(() => scrollToBottom(true), 50);
     },
     [sessionId, client, scrollToBottom],
+  );
+
+  // Retries a failed user message by resending its original content/attachments
+  // as a brand-new send — the failed bubble stays in the transcript as history
+  // rather than being mutated in place, consistent with how a real chat client
+  // shows a resend (pig-network-states' retry policy: retry re-attempts the
+  // same action, it doesn't hide that the first attempt failed).
+  const handleRetrySend = useCallback(
+    (message: TranscriptMessage) => {
+      handleSend(message.content, message.attachments ?? []);
+    },
+    [handleSend],
   );
 
   const renderEmptyTranscript = () => {
@@ -493,7 +598,7 @@ export default function TranscriptScreen() {
           </Pressable>
         </View>
         <Pressable
-          onPress={() => navigation.navigate('FileExplorer')}
+          onPress={() => navigation.navigate('FileExplorer', { initialPath: session?.folder })}
           accessibilityRole="button"
           accessibilityLabel="Open file explorer"
           style={[styles.folderButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
@@ -506,7 +611,7 @@ export default function TranscriptScreen() {
         ref={flatListRef}
         data={messages}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => <TranscriptRow item={item} onOpenAttachment={openAttachment} onOpenFile={openFileLink} />}
+        renderItem={({ item }) => <TranscriptRow item={item} onOpenAttachment={openAttachment} onOpenFile={openFileLink} onRetrySend={handleRetrySend} />}
         ListEmptyComponent={renderEmptyTranscript}
         contentContainerStyle={{ flexGrow: 1, paddingVertical: spacing.md }}
         keyboardShouldPersistTaps="handled"
@@ -527,7 +632,10 @@ export default function TranscriptScreen() {
         visible={slashOverlayVisible}
         onClose={() => setSlashOverlayVisible(false)}
         sessionId={sessionId}
-        onSelectModel={(m) => setSessionModelBadge(m.name)}
+        onSelectModel={(m) => {
+          userPickedModelRef.current = true;
+          setSessionModelBadge(m.name);
+        }}
         onSelectCommand={(cmd) => {
           if (cmd.name === '/clear') {
             setMessages([]);
@@ -577,6 +685,10 @@ const styles = StyleSheet.create({
   },
   userBubble: {
     maxWidth: '85%',
+  },
+  sendFailedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   agentTurn: {
     width: '100%',

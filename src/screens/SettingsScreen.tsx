@@ -18,6 +18,17 @@ function maskToken(token: string): string {
   return tail ? `Paired · token ending in ${tail}` : 'Paired';
 }
 
+/** Loose format check for an OpenRouter key, matching OpenRouterStep's setup-flow
+ * check — catches obvious typos (empty prefix, way-too-short) without validating
+ * against a fixed-length regex that could reject a legitimate key. */
+function keyFormatError(key: string): string | undefined {
+  const trimmed = key.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.startsWith('sk-or-')) return 'OpenRouter keys start with "sk-or-".';
+  if (trimmed.length < 10) return 'That key looks too short.';
+  return undefined;
+}
+
 const APPEARANCE_OPTIONS: { value: ThemePreference; label: string; icon: typeof Sun }[] = [
   { value: 'light', label: 'Light', icon: Sun },
   { value: 'dark', label: 'Dark', icon: Moon },
@@ -103,14 +114,20 @@ export default function SettingsScreen() {
   // round trip. Never merged into persisted state; only the masked
   // `keySuffix` is kept, matching §7's "key held server-side only" rule.
   const [keyDraft, setKeyDraft] = useState('');
+  // Live field-level validation, checked once the user blurs the field —
+  // an inline border+caption error before Save, not just a post-submit
+  // Alert (pig-interaction-states' field-level error state).
+  const [keyDraftError, setKeyDraftError] = useState<string | undefined>(undefined);
 
   const openKeyEditor = () => {
     setKeyDraft('');
+    setKeyDraftError(undefined);
     setIsEditingKey(true);
   };
 
   const cancelKeyEdit = () => {
     setKeyDraft('');
+    setKeyDraftError(undefined);
     setIsEditingKey(false);
   };
 
@@ -122,6 +139,11 @@ export default function SettingsScreen() {
         return;
       }
       Alert.alert('Key required', 'Paste a key before saving, or cancel.');
+      return;
+    }
+    const formatError = keyFormatError(trimmed);
+    if (formatError) {
+      setKeyDraftError(formatError);
       return;
     }
     const suffix = trimmed.slice(-4);
@@ -221,7 +243,11 @@ export default function SettingsScreen() {
             <View style={[styles.editor, { paddingBottom: spacing.sm, gap: spacing.xs }]}>
               <TextInput
                 value={keyDraft}
-                onChangeText={setKeyDraft}
+                onChangeText={(text) => {
+                  setKeyDraft(text);
+                  if (keyDraftError) setKeyDraftError(keyFormatError(text));
+                }}
+                onBlur={() => setKeyDraftError(keyFormatError(keyDraft))}
                 placeholder="Paste your OpenRouter key"
                 placeholderTextColor={colors.inkPlaceholder}
                 secureTextEntry
@@ -233,7 +259,7 @@ export default function SettingsScreen() {
                   {
                     color: colors.ink,
                     backgroundColor: colors.canvas,
-                    borderColor: colors.border,
+                    borderColor: keyDraftError ? colors.destructive : colors.border,
                     borderWidth: StyleSheet.hairlineWidth,
                     borderRadius: radius.chip,
                     paddingHorizontal: spacing.sm,
@@ -241,9 +267,15 @@ export default function SettingsScreen() {
                   },
                 ]}
               />
-              <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.caption, { color: colors.inkSecondary }]}>
-                Held on your VPS only — this app never stores or displays the full key.
-              </Text>
+              {keyDraftError ? (
+                <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.caption, { color: colors.destructive }]}>
+                  {keyDraftError}
+                </Text>
+              ) : (
+                <Text maxFontSizeMultiplier={maxFontScale} style={[typeScale.caption, { color: colors.inkSecondary }]}>
+                  Held on your VPS only — this app never stores or displays the full key.
+                </Text>
+              )}
               <View style={[styles.editorActions, { gap: spacing.sm }]}>
                 <Pressable
                   onPress={cancelKeyEdit}

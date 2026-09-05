@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import {
@@ -78,16 +78,39 @@ interface AgentActionsFeedProps {
  */
 export function AgentActionsFeed({ actions }: AgentActionsFeedProps) {
   const { colors, spacing, radius, typeScale } = useTheme();
+  // Starts uncollapsed (per row below, disabled while running anyway) but is
+  // auto-flipped to collapsed the instant the turn finishes — see the effect
+  // below. `userExpandedRef` remembers a manual tap so a later actions-array
+  // update (e.g. a fresh turn re-using this same feed instance) doesn't fight
+  // the user's own choice to re-open it.
   const [collapsed, setCollapsed] = useState(false);
+  const autoCollapsedRef = useRef(false);
 
   const stillRunning = useMemo(() => actions.some((a) => a.status === 'running'), [actions]);
 
+  // Auto-collapse to the one-line "N actions" summary the moment nothing is
+  // running any more (i.e. the turn's tool use just finished) — per
+  // AGENT_ACTIONS_STREAM_PLAN.md / UI_FIXES_PLAN.md item 1: collapsed by
+  // default once done, never mid-stream (that's the exact "what is it doing
+  // right now" moment this feed exists to answer), and only once per turn so
+  // a manual re-expand sticks.
+  useEffect(() => {
+    if (!stillRunning && !autoCollapsedRef.current) {
+      autoCollapsedRef.current = true;
+      setCollapsed(true);
+    }
+    if (stillRunning) {
+      autoCollapsedRef.current = false;
+    }
+  }, [stillRunning]);
+
   if (actions.length === 0) return null;
 
-  // Auto-collapse only once nothing is running any more (i.e. the turn's
-  // tool use is finished) — never mid-stream, since that's the exact "what
-  // is it doing right now" moment this feed exists to answer.
   const isCollapsed = !stillRunning && collapsed;
+  // Cap the expanded list at 7 rows — older entries scroll off (oldest first)
+  // so the feed's height stays predictable regardless of how many tool calls
+  // a turn makes.
+  const visibleActions = actions.slice(-7);
 
   return (
     <View
@@ -116,7 +139,7 @@ export function AgentActionsFeed({ actions }: AgentActionsFeedProps) {
       </Pressable>
       {!isCollapsed ? (
         <View testID="agent-actions-list" style={[styles.list, { paddingHorizontal: spacing.sm, paddingBottom: spacing.xxs }]}>
-          {actions.map((action) => (
+          {visibleActions.map((action) => (
             <ActionRow key={action.id} action={action} />
           ))}
         </View>

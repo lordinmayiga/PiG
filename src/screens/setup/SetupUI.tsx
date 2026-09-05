@@ -18,6 +18,7 @@ import { ChevronDown, ChevronUp } from 'lucide-react-native';
 
 import { useTheme } from '../../theme';
 import { isReduceMotionEnabled, usePressScale } from '../../theme/motion';
+import { DISABLED_OPACITY, useFocusVisible } from '../../theme/interaction';
 import { Icon, iconSizes } from '../../theme/icons';
 
 interface PrimaryButtonProps {
@@ -31,6 +32,7 @@ interface PrimaryButtonProps {
 export function PrimaryButton({ label, onPress, disabled, loading, variant = 'filled' }: PrimaryButtonProps) {
   const { colors, radius, spacing, typeScale, minTouchTarget, maxFontScale } = useTheme();
   const { style: pressStyle, pressProps } = usePressScale();
+  const { visible: focusVisible, ringStyle, focusProps } = useFocusVisible(colors);
   const isOutline = variant === 'outline';
 
   return (
@@ -41,6 +43,7 @@ export function PrimaryButton({ label, onPress, disabled, loading, variant = 'fi
       accessibilityLabel={label}
       accessibilityState={{ disabled: disabled || loading }}
       {...pressProps}
+      {...focusProps}
       style={{ minHeight: minTouchTarget }}
     >
       <Animated.View
@@ -54,8 +57,9 @@ export function PrimaryButton({ label, onPress, disabled, loading, variant = 'fi
             backgroundColor: isOutline ? 'transparent' : colors.accent,
             borderWidth: isOutline ? 1 : 0,
             borderColor: colors.border,
-            opacity: disabled ? 0.5 : 1,
+            opacity: disabled ? DISABLED_OPACITY : 1,
           },
+          focusVisible && ringStyle,
         ]}
       >
         {loading ? (
@@ -121,6 +125,7 @@ export function TextField({
 }: TextFieldProps) {
   const { colors, radius, spacing, typeScale, minTouchTarget, maxFontScale } = useTheme();
   const [focused, setFocused] = useState(false);
+  const { visible: focusVisible, ringStyle, focusProps } = useFocusVisible(colors);
 
   return (
     <View style={{ gap: spacing.xxs }}>
@@ -136,9 +141,14 @@ export function TextField({
         autoCorrect={false}
         keyboardType={keyboardType}
         secureTextEntry={secureTextEntry}
-        onFocus={() => setFocused(true)}
+        {...focusProps}
+        onFocus={(e) => {
+          setFocused(true);
+          focusProps.onFocus(e);
+        }}
         onBlur={() => {
           setFocused(false);
+          focusProps.onBlur();
           onBlur?.();
         }}
         maxFontSizeMultiplier={maxFontScale}
@@ -153,6 +163,10 @@ export function TextField({
             backgroundColor: colors.card,
             paddingHorizontal: spacing.sm,
           },
+          // Focus-visible ring (keyboard/D-pad/TalkBack) takes priority over
+          // the plain touch-focused accent border above — it composes its own
+          // border width/color/offset on top rather than fighting it.
+          focusVisible && ringStyle,
         ]}
       />
       {errorText ? (

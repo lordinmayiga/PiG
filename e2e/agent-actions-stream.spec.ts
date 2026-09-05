@@ -77,5 +77,29 @@ test.describe('Agent Actions Stream E2E', () => {
     // Once done, the header no longer says "Working…" (nothing left running).
     const header = page.getByTestId('agent-actions-header');
     await expect(header).not.toContainText('Working…', { timeout: 10_000 });
+
+    // UI_FIXES_PLAN.md item 1: the feed must auto-collapse to the one-line
+    // summary the instant the turn finishes, not stay expanded forever
+    // waiting for a manual tap. The row list unmounts entirely when collapsed.
+    await expect(list).toBeHidden({ timeout: 10_000 });
+    await expect(header).toContainText(/\d+ actions?/);
+
+    // Manual re-expand must still work (auto-collapse isn't one-way).
+    await header.click();
+    await expect(list).toBeVisible();
+    await header.click();
+    await expect(list).toBeHidden();
   });
 });
+
+// The 7-row cap (UI_FIXES_PLAN.md item 1's other half) is deliberately NOT
+// tested here: a real, uncoached prompt asking for 8 file reads was tried
+// and the agent satisfied it in a single batched tool call (1 real action,
+// not 8) — a genuinely capable, real agent doesn't reliably produce an
+// ungrouped 8+-action turn on demand, and forcing the wording until it does
+// would mean fabricating the state rather than observing it (see
+// e2e-test-methodology's Rule 2). The cap itself is covered instead by
+// `src/components/__tests__/AgentActionsFeed.test.tsx`, a component-level
+// test with synthetic actions, which is the correct place to pin down "does
+// slicing to 7 actually work" once agent behavior can't guarantee the
+// precondition.

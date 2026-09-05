@@ -6,6 +6,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Mic, Plus, Send, SquareSlash, X } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
+import { DISABLED_OPACITY, useFocusVisible } from '../theme/interaction';
+import { InlineActionSpinner } from './InlineActionSpinner';
 import { useKeyboardVisible } from '../hooks/useKeyboardVisible';
 import { sendRouteInput, type RouteInputAction } from '../network/routeInput';
 import { getBridgeClient } from '../network/bridgeConnection';
@@ -24,8 +26,14 @@ export interface ComposerProps {
    * have a real session yet (none currently); omitting it sends an empty
    * sessionId, which the backend would reject as malformed once it's real. */
   sessionId?: string;
-  /** Called with the cleaned-up prompt text once `/route-input` classifies a submission as an agent prompt. */
-  onSend: (text: string, attachments: ComposerAttachment[], alreadySent?: boolean) => void;
+  /** Called with the cleaned-up prompt text once `/route-input` classifies a
+   * submission as an agent prompt. `alreadySent: true` means the
+   * `route_input` envelope already went out and got a `prompt_routed`
+   * result back (sendStatus should read 'sent'); `sendFailed: true`
+   * (pig-network-states) means `sendRouteInput` itself threw — the message
+   * still needs to show up in the transcript, marked 'failed' with Retry,
+   * never silently dropped. */
+  onSend: (text: string, attachments: ComposerAttachment[], alreadySent?: boolean, sendFailed?: boolean) => void;
   /**
    * Called when `/route-input` classifies a submission as an environment
    * command (kill/new/switch session, etc), after the user has confirmed it
@@ -69,6 +77,14 @@ export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerP
   const keyboardVisible = useKeyboardVisible();
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // pig-interaction-states' element-level loading state for Send: true only
+  // while this composer's own sendRouteInput call is in flight, so a second
+  // tap can't fire a double-send race. Resolves/rejects independently of
+  // whatever TranscriptScreen does with the outcome (point 2/3 below).
+  const [isSending, setIsSending] = useState(false);
+  const attachFocus = useFocusVisible(colors);
+  const slashFocus = useFocusVisible(colors);
+  const sendFocus = useFocusVisible(colors);
 
   const canSend = text.trim().length > 0 || attachments.length > 0;
 
@@ -136,7 +152,7 @@ export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerP
   };
 
   const handleSend = async () => {
-    if (!canSend) return;
+    if (!canSend || isSending) return;
 
     // Verify pairing credentials exist in storage
     const creds = await loadBridgeCredentials();
@@ -169,6 +185,7 @@ export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerP
     setText('');
     setAttachments([]);
 
+    setIsSending(true);
     try {
       const result = await sendRouteInput(submittedText, submittedAttachments, sessionId ?? '');
       if (result.kind === 'action') {
@@ -205,6 +222,12 @@ export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerP
       } else {
         Alert.alert('Error', errorMessage);
       }
+      // pig-network-states: never silently drop the attempted send — it
+      // still needs to land in the transcript, marked failed with Retry,
+      // not vanish as if never typed.
+      onSend(submittedText, submittedAttachments, false, true);
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -286,7 +309,12 @@ export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerP
               onPress={handleAttachPress}
               accessibilityRole="button"
               accessibilityLabel="Attach a photo or file"
-              style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
+              {...attachFocus.focusProps}
+              style={[
+                styles.iconButton,
+                { minWidth: minTouchTarget, minHeight: minTouchTarget },
+                attachFocus.visible && attachFocus.ringStyle,
+              ]}
             >
               <Icon icon={Plus} size={20} color={colors.inkSecondary} />
             </Pressable>
@@ -296,7 +324,12 @@ export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerP
               onPress={onOpenSlash}
               accessibilityRole="button"
               accessibilityLabel="Slash commands"
-              style={[styles.iconButton, { minWidth: minTouchTarget, minHeight: minTouchTarget }]}
+              {...slashFocus.focusProps}
+              style={[
+                styles.iconButton,
+                { minWidth: minTouchTarget, minHeight: minTouchTarget },
+                slashFocus.visible && slashFocus.ringStyle,
+              ]}
             >
               {/* Slash-commands trigger — a Lucide icon per pig-icons-branding,
                   not a "/" text glyph in a mono font (that was a pig-typography
@@ -310,14 +343,23 @@ export function Composer({ sessionId, onSend, onAction, onOpenSlash }: ComposerP
             <Pressable
               testID="composer-send-btn"
               onPress={handleSend}
+              disabled={isSending}
               accessibilityRole="button"
-              accessibilityLabel="Send message"
+              accessibilityLabel={isSending ? 'Sending message' : 'Send message'}
+              accessibilityState={{ disabled: isSending }}
+              {...sendFocus.focusProps}
               style={[
                 styles.sendButton,
                 { backgroundColor: colors.accent, borderRadius: radius.pill, minWidth: minTouchTarget, minHeight: minTouchTarget },
+                sendFocus.visible && sendFocus.ringStyle,
+                isSending && { opacity: DISABLED_OPACITY },
               ]}
             >
-              <Icon icon={Send} size={20} color={colors.onAccent} />
+              {isSending ? (
+                <InlineActionSpinner active size={20} color={colors.onAccent} />
+              ) : (
+                <Icon icon={Send} size={20} color={colors.onAccent} />
+              )}
             </Pressable>
           ) : (
             <Pressable

@@ -124,6 +124,31 @@ export async function getAvailableAgyModels(): Promise<ModelInfo[]> {
 }
 
 /**
+ * Static curated model list for `claude-code` sessions' `/model` picker.
+ *
+ * Unlike `agy`, the `claude` CLI has no non-interactive "list available
+ * models" subcommand (`claude --help`'s `Commands:` section — verified live
+ * 2026-09-05 — exposes `agents`, `mcp`, `plugin`, `project`, etc. but nothing
+ * that enumerates selectable models), so there is no live-introspection
+ * source to shell out to the way `getAvailableAgyModels` does. Ship a
+ * curated static list instead.
+ *
+ * Ids are the CLI's own documented aliases (`claude --help`'s `--model`
+ * entry, verified live 2026-09-05: "Provide an alias for the latest model
+ * (e.g. 'fable', 'opus', or 'sonnet') ... or a model's full name") rather
+ * than a hardcoded full model id — aliases always resolve to whatever that
+ * tier's current model actually is, so this list doesn't go stale as
+ * specific model versions ship, unlike a pinned full id would.
+ */
+export function getAvailableClaudeModels(): ModelInfo[] {
+  return [
+    { id: 'opus', name: 'Claude Opus', description: 'Most capable, for hard or high-stakes tasks' },
+    { id: 'sonnet', name: 'Claude Sonnet', description: 'Balanced default for everyday coding' },
+    { id: 'haiku', name: 'Claude Haiku', description: 'Fastest, for lightweight tasks' },
+  ];
+}
+
+/**
  * Resolve the CLI binary + args used to start an agent in
  * stream-json/interactive mode, per agent kind.
  */
@@ -140,10 +165,22 @@ function resolveAgentCommand(
         : existsSync('/usr/local/bin/claude')
           ? '/usr/local/bin/claude'
           : 'claude';
-      return {
-        bin,
-        args: ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--dangerously-skip-permissions', '--verbose', prompt],
-      };
+      // `claude --help` (verified live 2026-09-05) confirms both flags exist
+      // on this CLI: `--model <model>` (an alias like "sonnet"/"opus" or a
+      // full model id like "claude-sonnet-4-6") and `--effort <level>` (low,
+      // medium, high, xhigh, max). Both are optional on the CLI itself, so
+      // they're only added when the caller actually supplied a value —
+      // omitting them keeps today's "let the CLI pick its own default"
+      // behavior for callers that don't care.
+      const args = ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--dangerously-skip-permissions', '--verbose'];
+      if (model) {
+        args.push('--model', model);
+      }
+      if (effort) {
+        args.push('--effort', effort);
+      }
+      args.push(prompt);
+      return { bin, args };
     }
     case 'antigravity': {
       const bin = existsSync('/root/.local/bin/agy')
@@ -204,6 +241,19 @@ export function spawnAgentInTmuxWindow(opts: SpawnAgentOptions): SpawnedAgentHan
     env: {
       ...process.env,
       PATH: `/root/.local/bin:/usr/local/bin:${process.env.PATH || ''}`,
+      // The claude CLI refuses `--dangerously-skip-permissions` outright
+      // when running as root/sudo ("... cannot be used with root/sudo
+      // privileges for security reasons") and exits before emitting any
+      // stream-json output — the turn just hangs empty forever from the
+      // UI's perspective, no error surfaced anywhere (found via
+      // UI_FIXES_PLAN.md item 2's e2e run). `IS_SANDBOX=1` is the CLI's own
+      // documented escape hatch for exactly this case (verified live
+      // 2026-09-05) and is a no-op for the antigravity `agy` binary, so it's
+      // safe to set unconditionally here rather than branching per agent.
+      // PiG's actual target deployment (a personal single-user VPS) commonly
+      // runs the backend as root, so this isn't sandbox-only — it's needed
+      // for claude-code to work at all in that real deployment shape.
+      IS_SANDBOX: '1',
     },
   });
   // `claude --print` takes its prompt as an argv entry (see
@@ -300,7 +350,11 @@ async function createMirrorTmuxWindow(
     // `args` is shell-escaped individually before joining — a prompt
     // containing `; rm -rf /` or a stray quote must never reach the pane's
     // shell unescaped.
-    const execCommand = `exec ${[bin, ...args].map(shellEscape).join(' ')}`;
+    // IS_SANDBOX=1: same root/`--dangerously-skip-permissions` escape hatch
+    // as the primary piped spawn above — without it, this mirror window
+    // would just show the CLI's root-refusal error instead of the actual
+    // command when the backend runs as root.
+    const execCommand = `exec env IS_SANDBOX=1 ${[bin, ...args].map(shellEscape).join(' ')}`;
     await execFileAsync('tmux', [
       'new-window',
       '-t',

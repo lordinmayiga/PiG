@@ -22,8 +22,14 @@ export interface Session {
 
 export type MessageRole = 'user' | 'agent';
 
-/** Agent-side streaming/lifecycle status, shown via the turn header's status dot. */
-export type AgentTurnStatus = 'streaming' | 'done' | 'error';
+/** Agent-side streaming/lifecycle status, shown via the turn header's status dot.
+ * 'cutoff' (pig-screen-states' "partial" transcript case): the connection
+ * dropped mid-stream, before a `done: true` chunk arrived for this turn.
+ * Distinct from 'done' (never silently presented as a completed turn) and
+ * from 'error' (this isn't a server-reported failure — the turn may still be
+ * running server-side; the app just lost the stream). Whatever partial
+ * content already arrived is kept, not discarded. */
+export type AgentTurnStatus = 'streaming' | 'done' | 'error' | 'cutoff';
 
 export interface FileAttachment {
   id: string;
@@ -80,6 +86,13 @@ export interface TranscriptMessage {
   actions?: AgentAction[];
   /** Only meaningful for role: 'agent'. */
   status?: AgentTurnStatus;
+  /** Only meaningful for role: 'user' — the outcome of *sending* this
+   * message (pig-network-states), a separate concept from `status` above
+   * (which tracks an agent turn's own streaming lifecycle, not send
+   * outcome). Undefined means a message that predates this tracking (e.g.
+   * loaded from cache/resync) — treated the same as 'sent' for rendering,
+   * since a message that came back from the server obviously sent fine. */
+  sendStatus?: 'pending' | 'sent' | 'failed';
   attachments?: FileAttachment[];
   usage?: TokenUsage;
 }

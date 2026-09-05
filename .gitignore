@@ -46,3 +46,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# backend transcript persistence (sessionRegistry.ts's JSONL log dir —
+# operational data, not source)
+/backend/data/

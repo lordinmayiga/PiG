@@ -32,7 +32,8 @@ import {
 import { useTheme } from '../theme';
 import { isReduceMotionEnabled } from '../theme/motion';
 import { useBridge } from '../contexts/BridgeContext';
-import type { ModelInfo, SlashCommandItem, TokenUsage } from '../types';
+import { useSessions } from '../contexts/SessionsContext';
+import type { AgentKind, ModelInfo, SlashCommandItem, TokenUsage } from '../types';
 
 const SHEET_SPRING = { damping: 20, stiffness: 140, mass: 0.8 };
 
@@ -45,14 +46,48 @@ export interface SlashCommandOverlayProps {
   initialView?: 'commands' | 'models' | 'usage';
 }
 
-const PRELOADED_COMMANDS: SlashCommandItem[] = [
-  { name: '/model', description: 'Choose active AI model & reasoning', badge: 'Gemini 3.8 Flash' },
-  { name: '/usage', description: 'Session token counts & context breakdown' },
-  { name: '/cost', description: 'View estimated session cost' },
-  { name: '/compact', description: 'Truncate older context to save tokens' },
-  { name: '/clear', description: 'Reset conversation history' },
-  { name: '/doctor', description: 'Run bridge and tmux diagnostics' },
-];
+/**
+ * Placeholder command list shown instantly (Tier 1) before the debounced
+ * bridge round-trip (Tier 2, `fetchLiveCommandData`) replaces it with the
+ * session's real, agent-aware descriptions from `server.ts`'s
+ * `handleCommandSearch`. Kept agent-aware here too so the very first paint
+ * doesn't flash a Gemini-flavored badge for a `claude-code` session (or vice
+ * versa) — see UI_FIXES_PLAN.md §2.
+ */
+function preloadedCommandsForAgent(agent: AgentKind | undefined): SlashCommandItem[] {
+  const modelBadge = agent === 'claude-code' ? 'Claude Sonnet' : 'Gemini 3.8 Flash';
+  return [
+    { name: '/model', description: 'Choose active AI model & reasoning', badge: modelBadge },
+    { name: '/usage', description: 'Session token counts & context breakdown' },
+    { name: '/cost', description: 'View estimated session cost' },
+    { name: '/compact', description: 'Truncate older context to save tokens' },
+    { name: '/clear', description: 'Reset conversation history' },
+    { name: '/doctor', description: 'Run bridge and tmux diagnostics' },
+  ];
+}
+
+/** Placeholder models list shown instantly (Tier 1), agent-aware for the
+ * same reason as `preloadedCommandsForAgent` above. */
+function preloadedModelsForAgent(agent: AgentKind | undefined): ModelInfo[] {
+  if (agent === 'claude-code') {
+    return [
+      { id: 'opus', name: 'Claude Opus', description: 'Most capable, for hard or high-stakes tasks' },
+      { id: 'sonnet', name: 'Claude Sonnet', description: 'Balanced default for everyday coding' },
+      { id: 'haiku', name: 'Claude Haiku', description: 'Fastest, for lightweight tasks' },
+    ];
+  }
+  return [
+    { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)', badge: 'Low' },
+    { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)', badge: 'Medium' },
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', badge: 'High' },
+    { id: 'gemini-3.7-flash-low', name: 'Gemini 3.7 Flash (Low)', badge: 'Low' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Thinking)', badge: 'Thinking' },
+  ];
+}
+
+function defaultSelectedModelIdForAgent(agent: AgentKind | undefined): string {
+  return agent === 'claude-code' ? 'sonnet' : 'gemini-3.8-flash-low';
+}
 
 export function SlashCommandOverlay({
   visible,
@@ -64,6 +99,11 @@ export function SlashCommandOverlay({
 }: SlashCommandOverlayProps) {
   const { colors, spacing, radius, typeScale } = useTheme();
   const { client } = useBridge();
+  const { sessions } = useSessions();
+  // Match by `id` or `name` — see TranscriptScreen's session lookup comment
+  // for why: a just-created session is navigated to by its human name
+  // before the backend has ever returned a real tmux id.
+  const agentKind = sessions.find((s) => s.id === sessionId || s.name === sessionId)?.agent;
 
   const [currentView, setCurrentView] = useState<'commands' | 'models' | 'usage'>(initialView);
   const [searchQuery, setSearchQuery] = useState('');
@@ -76,14 +116,21 @@ export function SlashCommandOverlay({
     }
   }
 
-  const [modelsList, setModelsList] = useState<ModelInfo[]>([
-    { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)', badge: 'Low' },
-    { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)', badge: 'Medium' },
-    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', badge: 'High' },
-    { id: 'gemini-3.7-flash-low', name: 'Gemini 3.7 Flash (Low)', badge: 'Low' },
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Thinking)', badge: 'Thinking' },
-  ]);
-  const [selectedModelId, setSelectedModelId] = useState<string>('gemini-3.8-flash-low');
+  const [modelsList, setModelsList] = useState<ModelInfo[]>(() => preloadedModelsForAgent(agentKind));
+  const [selectedModelId, setSelectedModelId] = useState<string>(() => defaultSelectedModelIdForAgent(agentKind));
+
+  // If `sessions` (and thus `agentKind`) is still loading when this overlay
+  // first mounts, or the caller opens it for a different session, re-derive
+  // the agent-aware placeholders once the real agent kind is known — the
+  // live bridge fetch below still overwrites both with real data as soon as
+  // it resolves.
+  const liveModelsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!liveModelsLoadedRef.current) {
+      setModelsList(preloadedModelsForAgent(agentKind));
+      setSelectedModelId(defaultSelectedModelIdForAgent(agentKind));
+    }
+  }, [agentKind]);
   const [sessionUsage, setSessionUsage] = useState<TokenUsage>({
     inputTokens: 13890,
     outputTokens: 720,
@@ -125,6 +172,7 @@ export function SlashCommandOverlay({
       try {
         const result = await client.searchCommands(query, sessionId);
         if (result.models && Array.isArray(result.models) && result.models.length > 0) {
+          liveModelsLoadedRef.current = true;
           setModelsList(result.models);
         }
         if (result.usage) {
@@ -142,6 +190,7 @@ export function SlashCommandOverlay({
     if (!client) return;
     const unsub = client.onCommandSearchResult((payload) => {
       if (payload.models && Array.isArray(payload.models) && payload.models.length > 0) {
+        liveModelsLoadedRef.current = true;
         setModelsList(payload.models);
       }
       if (payload.usage) {
@@ -163,13 +212,14 @@ export function SlashCommandOverlay({
   };
 
   // Tier 1 instant in-memory filter
+  const preloadedCommands = useMemo(() => preloadedCommandsForAgent(agentKind), [agentKind]);
   const filteredCommands = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    if (!q) return PRELOADED_COMMANDS;
-    return PRELOADED_COMMANDS.filter(
+    if (!q) return preloadedCommands;
+    return preloadedCommands.filter(
       (c) => c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q),
     );
-  }, [searchQuery]);
+  }, [searchQuery, preloadedCommands]);
 
   const filteredModels = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();

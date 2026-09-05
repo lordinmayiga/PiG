@@ -71,6 +71,17 @@ export function classify(text: string): ClassifyResult {
         if (match?.[1]) {
           params.name = match[1];
         }
+        // SessionsContext.createSession sends "new session <name> in <cwd>"
+        // when a folder is set (NewSessionSheet always sets one) — capture
+        // the trailing "in <cwd>" so create_session actually gets a folder
+        // to pass to `tmux new-session -c`. Previously dropped entirely,
+        // so every session's tmux pane started in tmux's own default
+        // directory regardless of what the user picked (UI_FIXES_PLAN.md
+        // item 3's e2e run).
+        const cwdMatch = trimmed.match(/\sin\s+(.+)$/i);
+        if (cwdMatch?.[1]) {
+          params.cwd = cwdMatch[1].trim();
+        }
       } else if (type === 'rename_session') {
         const match = trimmed.match(/(?:rename session(?:\s+to)?|rename(?:\s+to)?)\s+([a-zA-Z0-9_-]+)/i);
         if (match?.[1]) {
@@ -119,9 +130,11 @@ Determine whether the submission is:
 2. An agent prompt:
    - A task, instruction, or question for the coding agent (e.g. "fix the bug", "run tests", "how do I kill a process in linux?"). Questions or instructions to the AI are always prompts, never actions.
 
+For "create_session", if the input names a working directory/folder (e.g. "new session foo in /root/projects/bar"), include it verbatim as "cwd" in params — do not drop it.
+
 You must respond with ONLY a valid JSON object:
 If action:
-{"kind": "action", "action": {"type": "kill_session"|"create_session"|"rename_session"|"switch_session"|"cd", "params": {"name": string, "oldName"?: string, "newName"?: string, "path"?: string, "raw": string}, "summary": string}, "requiresConfirm": boolean}
+{"kind": "action", "action": {"type": "kill_session"|"create_session"|"rename_session"|"switch_session"|"cd", "params": {"name": string, "oldName"?: string, "newName"?: string, "path"?: string, "cwd"?: string, "raw": string}, "summary": string}, "requiresConfirm": boolean}
 
 If prompt:
 {"kind": "prompt", "cleanedPrompt": string}`;

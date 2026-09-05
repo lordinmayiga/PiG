@@ -13,6 +13,18 @@ interface OpenRouterStepProps {
   savedHost?: string;
 }
 
+/** Loose format check for an OpenRouter key — catches obvious typos (empty
+ * prefix, way-too-short) without validating against a fixed-length regex
+ * that could reject a legitimate key. This is optional key entry ("Never
+ * blocks"), so the bar stays low. */
+function keyFormatError(key: string): string | undefined {
+  const trimmed = key.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.startsWith('sk-or-')) return 'OpenRouter keys start with "sk-or-".';
+  if (trimmed.length < 10) return 'That key looks too short.';
+  return undefined;
+}
+
 /** Optional OpenRouter key entry, right after a successful pairing (SPEC.md §3.7). Never blocks. */
 export default function OpenRouterStep({ onDone, savedHost }: OpenRouterStepProps) {
   const { colors, spacing, radius, typeScale, maxFontScale } = useTheme();
@@ -20,6 +32,10 @@ export default function OpenRouterStep({ onDone, savedHost }: OpenRouterStepProp
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [credentials, setCredentials] = useState<BridgeCredentials | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
+  // Live field-level validation, checked once the user blurs the field —
+  // an inline border+caption error before submit, not just a post-submit
+  // Alert (pig-interaction-states' field-level error state).
+  const [keyError, setKeyError] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     loadBridgeCredentials().then((creds) => {
@@ -64,8 +80,13 @@ export default function OpenRouterStep({ onDone, savedHost }: OpenRouterStepProp
       <TextField
         label="API key"
         value={apiKey}
-        onChangeText={setApiKey}
+        onChangeText={(text) => {
+          setApiKey(text);
+          if (keyError) setKeyError(keyFormatError(text));
+        }}
+        onBlur={() => setKeyError(keyFormatError(apiKey))}
         placeholder="sk-or-…"
+        errorText={keyError}
         autoCapitalize="none"
         secureTextEntry
       />

@@ -4,6 +4,7 @@ import ReanimatedAnimated from 'react-native-reanimated';
 import { EllipsisVertical, Rocket, SquareTerminal, Trash2 } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../../theme';
+import { useFocusVisible } from '../../theme/interaction';
 import { STAGGER_OFFSET_MS, useCollapseOnRemove, useFadeSlideIn, usePressScale } from '../../theme/motion';
 import type { AgentKind, Session, SessionStatus } from '../../types';
 
@@ -58,6 +59,7 @@ export default function SessionCard({
   const { colors, spacing, radius, cardPadding, typeScale, minTouchTarget } = useTheme();
   const enterStyle = useFadeSlideIn(index * STAGGER_OFFSET_MS);
   const { style: pressStyle, pressProps } = usePressScale();
+  const menuFocus = useFocusVisible(colors);
   const [measuredHeight, setMeasuredHeight] = useState(0);
   const collapseStyle = useCollapseOnRemove(isKilling, measuredHeight, () => onKillAnimationComplete(session.id));
   const [translateX] = useState(() => new Animated.Value(0));
@@ -169,7 +171,12 @@ export default function SessionCard({
                   hitSlop={8}
                   accessibilityRole="button"
                   accessibilityLabel={`Options for ${session.name}`}
-                  style={[styles.menuButton, { minWidth: minTouchTarget / 2, minHeight: minTouchTarget / 2 }]}
+                  {...menuFocus.focusProps}
+                  style={[
+                    styles.menuButton,
+                    { minWidth: minTouchTarget / 2, minHeight: minTouchTarget / 2 },
+                    menuFocus.visible && menuFocus.ringStyle,
+                  ]}
                 >
                   <Icon icon={EllipsisVertical} size={20} color={colors.inkSecondary} />
                 </Pressable>

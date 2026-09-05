@@ -18,8 +18,80 @@
  * than crash).
  */
 
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { AgentKind, TranscriptMessage, TokenUsage } from '../../src/types/index.js';
 import type { SpawnedAgentHandle } from './agentProcess.js';
+
+/**
+ * Basic on-disk persistence so a backend restart doesn't wipe transcripts
+ * entirely ("keep what you can" — UI_FIXES_PLAN.md §4). One append-only
+ * JSONL file per session, one message per line. This is deliberately simple:
+ * no compaction/rotation, no history reconstruction beyond what was
+ * appended while this feature has been live. Base dir follows the
+ * module-relative convention used elsewhere in this backend (see
+ * auth.ts's PAIRING_STATE_FILE) rather than the user-homedir convention
+ * used for the OpenRouter key, since this is app-local operational data,
+ * not a user credential.
+ */
+const TRANSCRIPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'transcripts');
+
+function transcriptFilePath(sessionId: string): string {
+  // sessionId is a tmux session name; sanitize defensively before using it
+  // as a filename component (tmux names are already fairly restricted, but
+  // don't trust that blindly for path construction).
+  const safeName = sessionId.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  return join(TRANSCRIPTS_DIR, `${safeName}.jsonl`);
+}
+
+function persistMessage(sessionId: string, message: TranscriptMessage): void {
+  try {
+    if (!existsSync(TRANSCRIPTS_DIR)) {
+      mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
+    }
+    appendFileSync(transcriptFilePath(sessionId), `${JSON.stringify(message)}\n`, 'utf8');
+  } catch (err) {
+    // Best-effort — losing durability on a write failure shouldn't crash a
+    // live turn. The in-memory registry (and the client's own cache) still
+    // hold the message.
+    console.error(`[sessionRegistry] failed to persist transcript for "${sessionId}":`, err);
+  }
+}
+
+/** Loads a session's persisted transcript from its JSONL file, or an empty
+ * array if none exists yet / the file is unreadable. Malformed lines are
+ * skipped rather than aborting the whole load. */
+function loadPersistedTranscript(sessionId: string): TranscriptMessage[] {
+  const filePath = transcriptFilePath(sessionId);
+  if (!existsSync(filePath)) return [];
+  try {
+    const raw = readFileSync(filePath, 'utf8');
+    // Append-only means a streaming message that grew over several
+    // `appendTurn` calls has one line per call, same id — upsert by id on
+    // replay (mirroring appendTurn's in-memory behavior) so the loaded
+    // transcript reflects each message's final content, not a duplicate
+    // per intermediate chunk.
+    const byId = new Map<string, TranscriptMessage>();
+    const order: string[] = [];
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const message = JSON.parse(trimmed) as TranscriptMessage;
+        if (!byId.has(message.id)) order.push(message.id);
+        byId.set(message.id, message);
+      } catch {
+        // Skip a malformed line rather than discarding the whole file.
+      }
+    }
+    return order.map((id) => byId.get(id)!);
+  } catch (err) {
+    console.error(`[sessionRegistry] failed to load persisted transcript for "${sessionId}":`, err);
+    return [];
+  }
+}
 
 export interface ActiveSessionContext {
   sessionId: string;
@@ -46,15 +118,27 @@ const sessions = new Map<string, ActiveSessionContext>();
  * change out from under an in-progress conversation just because a caller
  * passed different defaults on a later lookup).
  */
+/** Per-`AgentKind` default model id, used both when seeding a fresh session
+ * context and by `getSessionModel`'s fallback — a session's default model
+ * must match the CLI it's actually going to spawn (`claude-code` sessions
+ * shell out to the `claude` binary, which has no `gemini-*` model, and vice
+ * versa for `antigravity`/`agy`). */
+export function defaultModelForAgent(agent: AgentKind): string {
+  return agent === 'claude-code' ? 'claude-sonnet-4-6' : 'gemini-3.8-flash';
+}
+
 export function getOrCreateSession(sessionId: string, cwd: string, agent: AgentKind): ActiveSessionContext {
   let ctx = sessions.get(sessionId);
   if (!ctx) {
+    // Seed from the on-disk JSONL log if one exists — e.g. this process
+    // just restarted and lost the in-memory registry, but a prior process
+    // persisted this session's transcript before going down.
     ctx = {
       sessionId,
       agent,
       cwd,
-      transcript: [],
-      model: 'gemini-3.8-flash',
+      transcript: loadPersistedTranscript(sessionId),
+      model: defaultModelForAgent(agent),
       effort: 'low',
       usage: {
         inputTokens: 0,
@@ -96,6 +180,7 @@ export function appendTurn(sessionId: string, message: TranscriptMessage): void 
   } else {
     ctx.transcript[existingIndex] = message;
   }
+  persistMessage(sessionId, message);
 }
 
 /** Returns the session's transcript, or `undefined` if the session hasn't
@@ -125,7 +210,7 @@ export function setSessionModel(sessionId: string, model: string, effort?: strin
 export function getSessionModel(sessionId: string): { model: string; effort: string } {
   const ctx = sessions.get(sessionId);
   return {
-    model: ctx?.model ?? 'gemini-3.8-flash',
+    model: ctx?.model ?? defaultModelForAgent(ctx?.agent ?? 'antigravity'),
     effort: ctx?.effort ?? 'low',
   };
 }

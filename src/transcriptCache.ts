@@ -86,6 +86,43 @@ export async function replaceAll(sessionId: string, messages: TranscriptMessage[
   }
 }
 
+/**
+ * Merges a resync snapshot from the server into the transcript already
+ * shown locally, without ever losing messages the user has already seen.
+ *
+ * The backend's transcript store is in-memory (`backend/src/sessionRegistry.ts`)
+ * with only best-effort JSONL persistence across restarts, so a
+ * `resync_snapshot` can legitimately come back shorter than what the client
+ * already has cached — e.g. right after a backend restart, before the
+ * restarted process has replayed everything a prior process had appended.
+ * Blindly replacing the local transcript with a shorter server one is a
+ * real, confirmed data-loss bug (see UI_FIXES_PLAN.md §4) — this merges by
+ * message id instead: keep every local message, and update-in-place or
+ * append anything the snapshot carries that's new or changed, preserving
+ * relative order. Only when the snapshot is a strict superset in length AND
+ * shares no id with the local list at a lower index (i.e. the normal case
+ * where server truth is >= local) does this reduce to a plain replace.
+ */
+export function mergeTranscripts(
+  local: TranscriptMessage[],
+  serverSnapshot: TranscriptMessage[],
+): TranscriptMessage[] {
+  if (local.length === 0) return serverSnapshot;
+  if (serverSnapshot.length === 0) return local;
+
+  const localIds = new Set(local.map((m) => m.id));
+  const merged = local.map((m) => {
+    const fromServer = serverSnapshot.find((s) => s.id === m.id);
+    return fromServer ?? m;
+  });
+  // Append any server messages the local list didn't have at all (newer
+  // turns the server knows about that haven't streamed to this client yet).
+  for (const s of serverSnapshot) {
+    if (!localIds.has(s.id)) merged.push(s);
+  }
+  return merged;
+}
+
 /** Clears the cached transcript for a session (e.g. on session deletion). */
 export async function clear(sessionId: string): Promise<void> {
   try {

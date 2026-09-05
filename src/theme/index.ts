@@ -15,6 +15,7 @@ export * from './radius';
 export * from './typography';
 export * from './icons';
 export * from './motion';
+export * from './interaction';
 
 export interface Theme {
   colors: ThemeColors;

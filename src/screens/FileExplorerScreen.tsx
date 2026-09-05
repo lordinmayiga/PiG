@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { ChevronLeft, File, FileText, Folder, FolderOpen, Image as ImageIcon } from 'lucide-react-native';
+import type { RouteProp } from '@react-navigation/native';
+import { AlertCircle, ChevronLeft, File, FileText, Folder, FolderOpen, Image as ImageIcon } from 'lucide-react-native';
 
 import { Icon, useTheme } from '../theme';
 import { useFolderTraverseSlide } from '../theme/motion';
@@ -14,6 +15,7 @@ import type { FileNode } from '../types';
 import { FileViewerSheet, type ViewableFile } from '../components/FileViewerSheet';
 
 type Nav = NativeStackNavigationProp<SessionsStackParamList, 'FileExplorer'>;
+type ExplorerRoute = RouteProp<SessionsStackParamList, 'FileExplorer'>;
 
 function parentPath(path: string): string {
   const segments = path.split('/');
@@ -57,10 +59,18 @@ export default function FileExplorerScreen() {
   const { colors, spacing, typeScale, minTouchTarget } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
+  const route = useRoute<ExplorerRoute>();
   const { client } = useBridge();
-  const [currentPath, setCurrentPath] = useState('');
+  // Opened from within a session (TranscriptScreen's folder button), this
+  // seeds the explorer at that session's working directory instead of the
+  // backend's global default. Any other call site that omits the param
+  // (none exist today) still falls through to '' -> fsList(undefined)'s
+  // existing default-root behavior.
+  const [currentPath, setCurrentPath] = useState(route.params?.initialPath ?? '');
   const [navDirection, setNavDirection] = useState<'forward' | 'back'>('forward');
   const [fsEntries, setFsEntries] = useState<FileNode[]>([]);
+  const [listError, setListError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
   const [viewerFile, setViewerFile] = useState<ViewableFile | null>(null);
   const [viewerContent, setViewerContent] = useState<string | undefined>(undefined);
   const traverseStyle = useFolderTraverseSlide(currentPath, navDirection);
@@ -74,6 +84,11 @@ export default function FileExplorerScreen() {
     if (!client) {
       return;
     }
+    // Reset any stale error from a previous path/retry before the new fetch
+    // resolves — an intentional "clear then refetch" effect, not a derived
+    // value the render could compute instead.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setListError(null);
     client
       .fsList(currentPath || undefined)
       .then((list) => {
@@ -87,13 +102,17 @@ export default function FileExplorerScreen() {
         }));
         setFsEntries(nodes);
       })
-      .catch(() => {
-        if (!cancelled) setFsEntries([]);
+      .catch((err) => {
+        // Keep whatever entries were already showing — fsList is all-or-
+        // nothing in this codebase, so there's nothing partial to merge, but
+        // a failed listing must not be conflated with a genuinely empty
+        // folder (pig-screen-states' partial/error rule).
+        if (!cancelled) setListError(err instanceof Error ? err.message : String(err));
       });
     return () => {
       cancelled = true;
     };
-  }, [client, currentPath]);
+  }, [client, currentPath, retryToken]);
 
   /** Navigate to `path`, inferring forward/back from the depth change for the slide direction. */
   const navigateTo = useCallback(
@@ -242,27 +261,58 @@ export default function FileExplorerScreen() {
           keyExtractor={(item) => item.path}
           contentContainerStyle={{ paddingTop: spacing.xs, paddingBottom: spacing.xs + insets.bottom }}
           ListEmptyComponent={
-            <View style={[styles.emptyState, { padding: spacing.xl, alignItems: 'center' }]}>
-              <Icon icon={FolderOpen} size={24} color={colors.inkSecondary} />
-              <Text
-                style={[typeScale.heading, { color: colors.ink, marginTop: spacing.sm, textAlign: 'center' }]}
-                maxFontSizeMultiplier={1.3}
-              >
-                This folder is empty
-              </Text>
-              {currentPath.length > 0 && (
+            listError ? (
+              // Total-failure state per pig-screen-states: this must never
+              // look like a genuinely empty folder — destructive icon/copy +
+              // Retry, distinct from the "This folder is empty" treatment.
+              <View style={[styles.emptyState, { padding: spacing.xl, alignItems: 'center' }]}>
+                <Icon icon={AlertCircle} size={24} color={colors.destructive} />
+                <Text
+                  style={[typeScale.heading, { color: colors.ink, marginTop: spacing.sm, textAlign: 'center' }]}
+                  maxFontSizeMultiplier={1.3}
+                >
+                  Couldn&apos;t load this folder
+                </Text>
+                <Text
+                  style={[typeScale.body, { color: colors.inkSecondary, marginTop: spacing.xxs, textAlign: 'center' }]}
+                  maxFontSizeMultiplier={1.3}
+                >
+                  {listError}
+                </Text>
                 <Pressable
-                  onPress={() => navigateTo(parentPath(currentPath))}
+                  onPress={() => setRetryToken((t) => t + 1)}
                   accessibilityRole="button"
-                  accessibilityLabel="Back to parent folder"
+                  accessibilityLabel="Retry"
                   style={{ marginTop: spacing.md, minHeight: minTouchTarget, justifyContent: 'center' }}
                 >
-                  <Text style={[typeScale.bodyMedium, { color: colors.accent }]} maxFontSizeMultiplier={1.3}>
-                    ← Back to parent folder
+                  <Text style={[typeScale.bodyMedium, { color: colors.destructive }]} maxFontSizeMultiplier={1.3}>
+                    Retry
                   </Text>
                 </Pressable>
-              )}
-            </View>
+              </View>
+            ) : (
+              <View style={[styles.emptyState, { padding: spacing.xl, alignItems: 'center' }]}>
+                <Icon icon={FolderOpen} size={24} color={colors.inkSecondary} />
+                <Text
+                  style={[typeScale.heading, { color: colors.ink, marginTop: spacing.sm, textAlign: 'center' }]}
+                  maxFontSizeMultiplier={1.3}
+                >
+                  This folder is empty
+                </Text>
+                {currentPath.length > 0 && (
+                  <Pressable
+                    onPress={() => navigateTo(parentPath(currentPath))}
+                    accessibilityRole="button"
+                    accessibilityLabel="Back to parent folder"
+                    style={{ marginTop: spacing.md, minHeight: minTouchTarget, justifyContent: 'center' }}
+                  >
+                    <Text style={[typeScale.bodyMedium, { color: colors.accent }]} maxFontSizeMultiplier={1.3}>
+                      ← Back to parent folder
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )
           }
           renderItem={({ item }) => (
             <Pressable

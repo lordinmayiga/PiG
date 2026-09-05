@@ -30,6 +30,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
+  AgentKind,
   Envelope,
   BridgeEventType,
   HelloPayload,
@@ -61,9 +62,10 @@ import { listTmuxSessions } from './tmux.js';
 import { isValidBridgeToken, verifyAndConsumePairingToken } from './auth.js';
 import { routeInput } from './routeInput.js';
 import { confirmAction } from './actions.js';
-import { spawnAgentInTmuxWindow, getAvailableAgyModels } from './agentProcess.js';
+import { spawnAgentInTmuxWindow, getAvailableAgyModels, getAvailableClaudeModels } from './agentProcess.js';
 import {
   getOrCreateSession,
+  getSession,
   appendTurn,
   getTranscript,
   setActiveHandle,
@@ -71,6 +73,7 @@ import {
   setSessionModel,
   getSessionUsage,
   accumulateUsage,
+  defaultModelForAgent,
 } from './sessionRegistry.js';
 import { listDirectory, readFileContent, MIME_TYPES } from './files.js';
 import { handleHttpFileRequest, mintRawFileTicket } from './httpFiles.js';
@@ -321,7 +324,8 @@ async function handleFsRawUrlRequest(ws: WebSocket, envelope: Envelope<FsRawUrlP
 async function handleCommandSearch(ws: WebSocket, envelope: Envelope<CommandSearchPayload>): Promise<void> {
   const { query, sessionId } = envelope.payload;
   const sId = sessionId ?? envelope.sessionId ?? '';
-  const currentModel = sId ? getSessionModel(sId) : { model: 'gemini-3.8-flash', effort: 'low' };
+  const sessionAgent: AgentKind = (sId ? getSession(sId)?.agent : undefined) ?? 'antigravity';
+  const currentModel = sId ? getSessionModel(sId) : { model: defaultModelForAgent(sessionAgent), effort: 'low' };
   const currentUsage = sId ? getSessionUsage(sId) : {
     inputTokens: 0,
     outputTokens: 0,
@@ -332,14 +336,29 @@ async function handleCommandSearch(ws: WebSocket, envelope: Envelope<CommandSear
 
   const cost = (currentUsage.totalTokens * 0.000002).toFixed(4);
 
-  const allCommands: SlashCommandItem[] = [
-    { name: '/model', description: 'Choose active AI model & reasoning', badge: currentModel.model },
-    { name: '/usage', description: 'Session token counts & context breakdown', badge: `${currentUsage.totalTokens.toLocaleString()} tokens` },
-    { name: '/cost', description: 'View estimated session cost', badge: `$${cost}` },
-    { name: '/compact', description: 'Truncate older context to save tokens' },
-    { name: '/clear', description: 'Reset conversation history' },
-    { name: '/doctor', description: 'Run bridge and tmux diagnostics' },
-  ];
+  // Same 6 commands regardless of agent kind (real per-command CLI execution
+  // semantics — e.g. `/compact` actually compacting a claude-code session —
+  // is future work, tracked in UI_FIXES_PLAN.md §2), but descriptions/badges
+  // reflect which CLI is actually live for this session rather than always
+  // reading as Antigravity-flavored copy.
+  const allCommands: SlashCommandItem[] =
+    sessionAgent === 'claude-code'
+      ? [
+          { name: '/model', description: 'Choose active Claude model', badge: currentModel.model },
+          { name: '/usage', description: 'Session token counts & context breakdown', badge: `${currentUsage.totalTokens.toLocaleString()} tokens` },
+          { name: '/cost', description: 'View estimated session cost', badge: `$${cost}` },
+          { name: '/compact', description: 'Truncate older context to save tokens' },
+          { name: '/clear', description: 'Reset conversation history' },
+          { name: '/doctor', description: 'Run Claude Code and bridge diagnostics' },
+        ]
+      : [
+          { name: '/model', description: 'Choose active AI model & reasoning', badge: currentModel.model },
+          { name: '/usage', description: 'Session token counts & context breakdown', badge: `${currentUsage.totalTokens.toLocaleString()} tokens` },
+          { name: '/cost', description: 'View estimated session cost', badge: `$${cost}` },
+          { name: '/compact', description: 'Truncate older context to save tokens' },
+          { name: '/clear', description: 'Reset conversation history' },
+          { name: '/doctor', description: 'Run bridge and tmux diagnostics' },
+        ];
 
   const q = (query || '').toLowerCase().trim();
   const filteredCommands = allCommands.filter(
@@ -348,7 +367,7 @@ async function handleCommandSearch(ws: WebSocket, envelope: Envelope<CommandSear
 
   let models: ModelInfo[] | undefined;
   if (!q || q.includes('model')) {
-    models = await getAvailableAgyModels();
+    models = sessionAgent === 'claude-code' ? getAvailableClaudeModels() : await getAvailableAgyModels();
   }
 
   const result: CommandSearchResultPayload = {
